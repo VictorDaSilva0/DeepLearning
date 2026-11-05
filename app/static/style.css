@@ -383,9 +383,9 @@ textarea { resize: vertical; }
 }
 .find-bar input:not([type=checkbox]) { width: 170px; padding: 4px 8px; }
 .editor-split { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 1fr; }
-.editor-split.mode-edit { grid-template-columns: 1fr 0; }
+.editor-split.mode-edit { grid-template-columns: minmax(0, 1fr); }
 .editor-split.mode-edit #preview { display: none; }
-.editor-split.mode-preview { grid-template-columns: 0 1fr; }
+.editor-split.mode-preview { grid-template-columns: minmax(0, 1fr); }
 .editor-split.mode-preview #editor { display: none; }
 #editor {
   border: none; border-radius: 0; resize: none; padding: 22px 26px; font: 14px/1.7 var(--mono);

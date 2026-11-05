@@ -72,6 +72,7 @@ def cleanup_markdown(text: str) -> str:
     text = text.replace("\r\n", "\n").replace("\r", "\n").replace(" ", " ").replace("\x00", "")
     for lig, plain in LIGATURES.items():
         text = text.replace(lig, plain)
+    text = re.sub(r"[​‌‍⁠﻿]", "", text)  # caractères invisibles (largeur nulle)
     text = re.sub(r"[ \t]+\n", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
@@ -377,6 +378,151 @@ def _iter_shapes(shapes):
             yield shape
 
 
+_MONO_FONTS = ("courier", "consolas", "mono", "lucida console", "monaco", "menlo", "source code", "fira code")
+_PROMPT_RE = re.compile(r"^\s*\S+@[\w.-]+:\S*\s?[$#]\s")
+
+
+def _para_text(para) -> str:
+    """Texte d'un paragraphe en gardant les retours à la ligne forcés (Maj+Entrée)."""
+    return (para.text or "").replace("\x0b", "\n").replace("\xa0", " ")
+
+
+def _rich_para_text(para) -> str:
+    """Texte d'un paragraphe en Markdown : police à chasse fixe → `code`, gras, italique."""
+    from pptx.text.text import _Run
+
+    pieces: list[list] = []  # [texte, code, gras, italique]
+    for child in para._p:
+        tag = child.tag.rsplit("}", 1)[-1]
+        if tag == "r":
+            run = _Run(child, para)
+            name = (run.font.name or "").lower()
+            fmt = [any(m in name for m in _MONO_FONTS), bool(run.font.bold), bool(run.font.italic)]
+            text = run.text.replace("\xa0", " ").replace("\x0b", " ")
+        elif tag == "br":
+            fmt, text = [False, False, False], " "
+        elif tag == "fld":
+            fmt, text = [False, False, False], "".join(child.itertext())
+        else:
+            continue
+        if pieces and pieces[-1][1:] == fmt:
+            pieces[-1][0] += text
+        else:
+            pieces.append([text, *fmt])
+
+    out = []
+    for text, code, bold, italic in pieces:
+        if not code:
+            # Un « * » collé à un mot (ex. « wildcard* ») serait pris pour de l'italique : on l'échappe.
+            text = re.sub(r"(?<=\S)\*|\*(?=\S)", r"\\*", text)
+        core = text.strip()
+        if not core or not (code or bold or italic):
+            out.append(text)
+            continue
+        lead, trail = text[: len(text) - len(text.lstrip())], text[len(text.rstrip()) :]
+        if code:
+            tick = "``" if "`" in core else "`"
+            core = f"{tick}{core}{tick}"
+        else:
+            mark = "***" if (bold and italic) else ("**" if bold else "*")
+            core = f"{mark}{core}{mark}"
+        out.append(f"{lead}{core}{trail}")
+    return re.sub(r"\s+", " ", "".join(out)).strip()
+
+
+def _find_title(slide):
+    """Le titre de la diapo. python-pptx ne le trouve pas toujours (exports Google Slides)."""
+    from pptx.enum.shapes import PP_PLACEHOLDER
+
+    title = slide.shapes.title
+    if title is not None:
+        return title
+    for shape in slide.placeholders:
+        try:
+            if shape.placeholder_format.type in (
+                PP_PLACEHOLDER.TITLE, PP_PLACEHOLDER.CENTER_TITLE, PP_PLACEHOLDER.VERTICAL_TITLE
+            ):
+                return shape
+        except ValueError:
+            continue
+    return None
+
+
+def _is_code_shape(shape) -> bool:
+    """Zone de texte en police à chasse fixe ou ressemblant à un terminal (« user@host:~$ ls »)."""
+    if not shape.has_text_frame:
+        return False
+    texts = [_para_text(p) for p in shape.text_frame.paragraphs]
+    if not any(t.strip() for t in texts):
+        return False
+    if any(_PROMPT_RE.match(line) for t in texts for line in t.split("\n")):
+        return True
+    fonts = [
+        (r.font.name or "").lower()
+        for p in shape.text_frame.paragraphs
+        for r in p.runs
+        if r.text.strip() and r.font.name
+    ]
+    return bool(fonts) and all(any(m in f for m in _MONO_FONTS) for f in fonts)
+
+
+def _code_block(shape) -> str:
+    lines: list[str] = []
+    for p in shape.text_frame.paragraphs:
+        lines.extend(_para_text(p).split("\n"))
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    body = "\n".join(line.rstrip() for line in lines).replace("```", "ʼʼʼ")
+    return f"```\n{body}\n```"
+
+
+def _contains_center(host, shape) -> bool:
+    if None in (host.top, host.left, host.height, host.width, shape.top, shape.left, shape.height, shape.width):
+        return False
+    cy, cx = shape.top + shape.height / 2, shape.left + shape.width / 2
+    return host.top <= cy <= host.top + host.height and host.left <= cx <= host.left + host.width
+
+
+def _text_shape_lines(shape, codes: list) -> list[str]:
+    """Puces d'une zone de texte, avec les blocs de code posés par-dessus insérés au bon endroit.
+
+    Les diapos placent souvent un encadré « terminal » sur des lignes laissées vides du corps du texte :
+    on estime la position verticale de chaque paragraphe pour y glisser le bloc de code correspondant."""
+    import math
+
+    paras = list(shape.text_frame.paragraphs)
+    inserts: dict[int, list] = {}
+    if codes and paras:
+        weights = [max(1, math.ceil(len(_para_text(p)) / 70)) for p in paras]
+        total = sum(weights)
+        starts, acc = [], 0
+        for w in weights:
+            starts.append(acc / total)
+            acc += w
+        empties = [i for i, p in enumerate(paras) if not _para_text(p).strip()]
+        for code in sorted(codes, key=lambda s: s.top or 0):
+            frac = (code.top + code.height / 2 - shape.top) / (shape.height or 1)
+            if empties:
+                i = min(empties, key=lambda k: abs(starts[k] + weights[k] / (2 * total) - frac))
+            else:
+                i = max([k for k in range(len(paras)) if starts[k] <= frac] or [len(paras) - 1])
+            inserts.setdefault(i, []).append(code)
+
+    lines: list[str] = []
+    for i, para in enumerate(paras):
+        try:
+            text = _rich_para_text(para)
+        except Exception:  # structure XML inattendue : on se contente du texte brut
+            text = re.sub(r"\s+", " ", _para_text(para)).strip()
+        if text:
+            lines.append(f"{'  ' * (para.level or 0)}- {text}")
+        for code in inserts.get(i, []):
+            lines += ["", _code_block(code), ""]
+    return lines
+
+
 def pptx_to_markdown(path: Path) -> tuple[str, list[str]]:
     from pptx import Presentation
 
@@ -384,23 +530,35 @@ def pptx_to_markdown(path: Path) -> tuple[str, list[str]]:
     out: list[str] = []
     empty_slides = 0
     for index, slide in enumerate(prs.slides, start=1):
-        title_shape = slide.shapes.title
+        title_shape = _find_title(slide)
         title = ""
         if title_shape is not None and title_shape.has_text_frame:
-            title = re.sub(r"\s+", " ", title_shape.text_frame.text).strip()
+            parts = [re.sub(r"\s+", " ", _para_text(p)).strip() for p in title_shape.text_frame.paragraphs]
+            title = " – ".join(p for p in parts if p)
         out.append(f"## {index}. {title}" if title else f"## Diapositive {index}")
 
-        shapes = [s for s in _iter_shapes(slide.shapes)]
+        shapes = [
+            s for s in _iter_shapes(slide.shapes) if title_shape is None or s.shape_id != title_shape.shape_id
+        ]
         shapes.sort(key=lambda s: ((s.top or 0), (s.left or 0)))
+        codes = [s for s in shapes if _is_code_shape(s)]
+        hosts = [s for s in shapes if s.has_text_frame and s not in codes]
+        placed: dict[int, list] = {}
+        standalone = set()
+        for code in codes:
+            host = next((h for h in hosts if _contains_center(h, code)), None)
+            if host is not None:
+                placed.setdefault(host.shape_id, []).append(code)
+            else:
+                standalone.add(code.shape_id)
+
         slide_lines: list[str] = []
         for shape in shapes:
-            if title_shape is not None and shape.shape_id == title_shape.shape_id:
-                continue
-            if shape.has_text_frame:
-                for para in shape.text_frame.paragraphs:
-                    text = re.sub(r"\s+", " ", "".join(r.text for r in para.runs) or para.text or "").strip()
-                    if text:
-                        slide_lines.append(f"{'  ' * (para.level or 0)}- {text}")
+            if shape in codes:
+                if shape.shape_id in standalone:
+                    slide_lines += ["", _code_block(shape), ""]
+            elif shape.has_text_frame:
+                slide_lines += _text_shape_lines(shape, placed.get(shape.shape_id, []))
             elif getattr(shape, "has_table", False) and shape.has_table:
                 rows = [[cell.text for cell in row.cells] for row in shape.table.rows]
                 md = rows_to_markdown_table(rows)
@@ -410,8 +568,8 @@ def pptx_to_markdown(path: Path) -> tuple[str, list[str]]:
                 chart = shape.chart
                 if chart.has_title and chart.chart_title.has_text_frame:
                     slide_lines.append(f"- *(graphique : {chart.chart_title.text_frame.text.strip()})*")
-        if slide_lines:
-            out.append("\n".join(slide_lines))
+        if any(line.strip() for line in slide_lines):
+            out.append("\n".join(slide_lines).strip("\n"))
         elif not title:
             empty_slides += 1
 
