@@ -22,6 +22,7 @@ DEFAULT_SETTINGS: dict[str, object] = {
     "num_ctx": 16384,  # taille de contexte envoyée à Ollama (tokens)
     "temperature": 0.4,
     "think": False,  # mode "réflexion" pour les modèles qui le supportent
+    "current_semester": "",  # ex. "S7" : semestre déplié en premier dans la bibliothèque
 }
 
 ALLOWED_IMPORT_EXT = {".pdf", ".docx", ".pptx", ".txt", ".md", ".markdown"}

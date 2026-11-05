@@ -28,8 +28,10 @@ Options : `python run.py --no-browser`. Variables d'environnement : `DEEPLEARNIN
 
 | Zone | Ce qu'on peut faire |
 | --- | --- |
-| **Bibliothèque** | Matières colorées, cours et documents générés rangés sous leur cours d'origine, recherche plein texte, glisser-déposer de fichiers (sur une matière pour l'y ranger). |
-| **Import** | PDF (titres détectés d'après la taille de police, tableaux, en-têtes/pieds de page répétés supprimés), DOCX (titres, listes, gras/italique, liens, tableaux), PPTX (une section par diapositive, puces, tableaux, notes de l'orateur). Le fichier d'origine reste consultable. |
+| **Bibliothèque** | Matières (modules) rangées par **semestre** (le semestre en cours est déplié, réglable dans ⚙), cours et documents générés rangés sous leur cours d'origine, recherche plein texte, glisser-déposer de fichiers (sur une matière pour l'y ranger). |
+| **Import** | PDF (titres détectés d'après la taille de police, tableaux, en-têtes/pieds de page répétés supprimés), DOCX (titres, listes, gras/italique, liens, tableaux), PPTX (une section par diapositive, puces, tableaux, notes de l'orateur). |
+| **Cours d'origine** | Onglet *Original* : le fichier importé s'affiche tel quel dans l'outil. Les PDF directement ; les Word / PowerPoint sont convertis en PDF par **Microsoft Office** (une fois, puis mis en cache). |
+| **Calendrier** | Vue mensuelle des examens, partiels, oraux, TP notés et rendus, liés à une matière ; compte à rebours sur l'accueil et à côté de chaque matière ; export `.ics` vers Google Agenda / Outlook / téléphone. |
 | **Pages scannées** | Les pages PDF sans texte sont repérées ; le bouton *Transcrire avec l'IA* les lit avec un modèle **vision** (ex. Gemma). |
 | **Éditeur** | Markdown avec aperçu côte à côte, titres, listes (continuation auto), tableaux, surlignage `==texte==`, formules `$…$`, Ctrl+B/I/K/S/F, rechercher/remplacer, mode concentration, sauvegarde automatique, export `.md` / page imprimable (PDF). |
 | **IA — Générer** | Fiche de révision, résumé, exercices corrigés (corrigés regroupés à la fin), QCM, flashcards, questions d'examen, explication simplifiée, glossaire, plan / carte mentale, demande libre. Sur tout le cours ou seulement la sélection, avec difficulté, nombre et consignes. |
@@ -52,6 +54,7 @@ app/
   prompts.py     consignes envoyées au modèle
   render.py      Markdown → HTML assaini (aperçu, export)
   srs.py         planification des flashcards
+  office.py      conversion Word / PowerPoint → PDF (aperçu de l'original, via Office)
   db.py          SQLite (data/deeplearning.db)
   static/        interface web (HTML/CSS/JS sans build)
 run.py           lance le serveur et ouvre le navigateur
@@ -65,5 +68,6 @@ lancer.bat       lanceur Windows
 - **Correction de copie** : tu réponds aux exercices, l'IA note et commente.
 - **Export Anki** (`.apkg`) des flashcards et export Word/PDF des fiches.
 - **Images des cours** : extraction des schémas et description par le modèle vision.
-- **Planning de révision** jusqu'à une date d'examen, avec statistiques de progression.
+- **Planning de révision** généré à partir du calendrier des examens (qui réviser quel jour), avec statistiques de progression.
+- **Rappels** : flashcards de la matière proposées en priorité quand son examen approche.
 - **Lecture audio** des fiches (synthèse vocale) et mode Pomodoro.

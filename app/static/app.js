@@ -273,70 +273,191 @@ const editor = $('#editor');
 const preview = $('#preview');
 
 // ================================================================== bibliothèque
+// ------------------------------------------------------------------ semestres
+const semNum = (s) => parseInt(String(s || '').slice(1), 10) || 0;
+const semLabel = (s) => (s ? `Semestre ${semNum(s)} · I${Math.ceil(semNum(s) / 2)}` : 'Autres matières');
+const currentSemester = () => state.settings?.current_semester || '';
+
+/** Semestres présents, le semestre en cours d'abord, puis du plus récent au plus ancien. */
+function semesterList() {
+  const cur = currentSemester();
+  const list = [...new Set(state.subjects.map((s) => s.semester || ''))];
+  return list.sort((a, b) => {
+    if (a === cur) return -1;
+    if (b === cur) return 1;
+    if (!a) return 1;
+    if (!b) return -1;
+    return semNum(b) - semNum(a);
+  });
+}
+
+/** Options d'un <select> de matières, regroupées par semestre. */
+function subjectOptions(noneLabel = 'Sans matière') {
+  let html = `<option value="">${esc(noneLabel)}</option>`;
+  for (const sem of semesterList()) {
+    const subs = state.subjects.filter((s) => (s.semester || '') === sem);
+    html += `<optgroup label="${esc(semLabel(sem))}">${subs.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join('')}</optgroup>`;
+  }
+  return html;
+}
+
+const subjectById = (id) => state.subjects.find((s) => s.id === id);
+
+function daysUntil(iso) {
+  const d = new Date(iso + 'T00:00:00');
+  const t = new Date();
+  t.setHours(0, 0, 0, 0);
+  return Math.round((d - t) / 86400000);
+}
+const countdownText = (n) => (n === 0 ? "aujourd'hui" : n === 1 ? 'demain' : n < 0 ? `il y a ${-n} j` : `J-${n}`);
+const urgency = (n) => (n <= 3 ? 'soon' : n <= 10 ? 'near' : '');
+
+// ------------------------------------------------------------------ chargement
 async function loadLibrary() {
-  const [subjects, docs] = await Promise.all([api('/api/subjects'), api('/api/documents')]);
+  const [subjects, docs, upcoming] = await Promise.all([
+    api('/api/subjects'),
+    api('/api/documents'),
+    api('/api/events/upcoming?limit=60').catch(() => []),
+  ]);
   state.subjects = subjects;
   state.docs = docs;
+  state.upcoming = upcoming;
   renderLibrary();
   fillSubjectSelects();
+  updateNextExamBadge();
+}
+
+async function refreshUpcoming() {
+  try {
+    state.upcoming = await api('/api/events/upcoming?limit=60');
+  } catch {
+    state.upcoming = [];
+  }
+  renderLibrary();
+  updateNextExamBadge();
+}
+
+function updateNextExamBadge() {
+  const b = $('#next-exam');
+  const next = (state.upcoming || [])[0];
+  b.hidden = !next;
+  if (next) {
+    const n = daysUntil(next.date);
+    b.textContent = n === 0 ? "auj." : `J-${n}`;
+    b.className = urgency(n);
+    b.parentElement.title = `Prochain : ${next.title} (${countdownText(n)})`;
+  }
 }
 
 function renderLibrary() {
   const nav = $('#library');
+  const scroll = nav.scrollTop;
   nav.innerHTML = '';
   if (!state.docs.length && !state.subjects.length) {
-    nav.innerHTML = '<div class="empty">Ta bibliothèque est vide.<br>Commence par importer un cours ⬆</div>';
+    nav.innerHTML = '<div class="empty">Ta bibliothèque est vide.<br>Crée une matière ou importe un cours ⬆</div>';
     return;
   }
   const byId = new Map(state.docs.map((d) => [d.id, d]));
-  const groups = [...state.subjects, { id: null, name: 'Sans matière', color: '#9ca3af' }];
-  for (const g of groups) {
-    const docs = state.docs.filter((d) => (d.subject_id ?? null) === g.id);
-    if (g.id === null && !docs.length) continue;
-    const inGroup = (d) => d && (d.subject_id ?? null) === g.id;
-    const roots = docs.filter((d) => !d.parent_id || !inGroup(byId.get(d.parent_id)));
-    const childrenOf = (id) => docs.filter((d) => d.parent_id === id);
-    const key = String(g.id);
-
-    const wrap = document.createElement('div');
-    wrap.className = 'subject' + (state.collapsed[key] ? ' collapsed' : '');
-    wrap.innerHTML = `
-      <div class="subject-head" data-sid="${g.id ?? ''}">
-        <span class="caret">▾</span>
-        <span class="swatch" style="background:${esc(g.color)}"></span>
-        <span class="name">${esc(g.name)}</span>
-        <span class="count">${docs.length}</span>
-        <span class="spacer"></span>
-        ${g.id !== null ? '<button class="icon-btn" data-menu title="Options de la matière">⋯</button>' : ''}
-      </div>
-      <div class="subject-docs"></div>`;
-    const head = wrap.querySelector('.subject-head');
-    head.addEventListener('click', (e) => {
-      if (e.target.closest('[data-menu]')) {
-        e.stopPropagation();
-        subjectMenu(e.target.closest('[data-menu]'), g);
-        return;
-      }
-      state.collapsed[key] = !state.collapsed[key];
-      store.set('collapsed', state.collapsed);
-      wrap.classList.toggle('collapsed', state.collapsed[key]);
-    });
-    head.addEventListener('dragover', () => head.classList.add('drop-target'));
-    head.addEventListener('dragleave', () => head.classList.remove('drop-target'));
-    head.addEventListener('drop', () => head.classList.remove('drop-target'));
-
-    const list = wrap.querySelector('.subject-docs');
-    if (!docs.length) list.innerHTML = '<div class="empty">Vide — glisse un fichier sur la matière.</div>';
-    const seen = new Set();
-    const add = (d, depth) => {
-      if (seen.has(d.id)) return;
-      seen.add(d.id);
-      list.append(docItem(d, depth));
-      childrenOf(d.id).forEach((c) => add(c, depth + 1));
-    };
-    roots.forEach((d) => add(d, 0));
-    nav.append(wrap);
+  const cur = currentSemester();
+  // Prochain examen de chaque matière (dans les 3 semaines) pour l'afficher à côté du nom.
+  const exams = new Map();
+  for (const ev of state.upcoming || []) {
+    if (ev.subject_id && !exams.has(ev.subject_id) && daysUntil(ev.date) <= 21) exams.set(ev.subject_id, ev);
   }
+
+  for (const sem of semesterList()) {
+    const subs = state.subjects.filter((s) => (s.semester || '') === sem);
+    const key = 'sem:' + sem;
+    const collapsed = state.collapsed[key] ?? Boolean(cur && sem !== cur);
+    const nDocs = subs.reduce((a, s) => a + (s.doc_count || 0), 0);
+    const block = document.createElement('section');
+    block.className = 'semester' + (collapsed ? ' collapsed' : '');
+    block.innerHTML = `
+      <div class="semester-head" title="${subs.length} matière(s), ${nDocs} document(s)">
+        <span class="caret">▾</span>
+        <span>${esc(semesterList().length === 1 && !sem ? 'Matières' : semLabel(sem))}</span>
+        ${sem && sem === cur ? '<span class="chip now">en cours</span>' : ''}
+        <span class="spacer"></span>
+        <span class="count">${subs.length}</span>
+      </div>
+      <div class="semester-body"></div>`;
+    block.querySelector('.semester-head').addEventListener('click', () => {
+      const now = !block.classList.contains('collapsed');
+      state.collapsed[key] = now;
+      store.set('collapsed', state.collapsed);
+      block.classList.toggle('collapsed', now);
+    });
+    const body = block.querySelector('.semester-body');
+    for (const s of subs) {
+      body.append(subjectGroup(s, state.docs.filter((d) => d.subject_id === s.id), byId, exams.get(s.id)));
+    }
+    nav.append(block);
+  }
+
+  const loose = state.docs.filter((d) => d.subject_id == null);
+  if (loose.length) {
+    const block = document.createElement('section');
+    block.className = 'semester';
+    block.innerHTML = '<div class="semester-head"><span class="caret">▾</span><span>Sans matière</span></div><div class="semester-body"></div>';
+    block.querySelector('.semester-body').append(subjectGroup({ id: null, name: 'Documents à ranger', color: '#9ca3af' }, loose, byId));
+    nav.append(block);
+  }
+  nav.scrollTop = scroll;
+}
+
+function subjectGroup(g, docs, byId, exam) {
+  const inGroup = (d) => d && (d.subject_id ?? null) === g.id;
+  const roots = docs.filter((d) => !d.parent_id || !inGroup(byId.get(d.parent_id)));
+  const childrenOf = (id) => docs.filter((d) => d.parent_id === id);
+  const key = String(g.id);
+
+  const wrap = document.createElement('div');
+  wrap.className = 'subject' + (state.collapsed[key] ? ' collapsed' : '') + (docs.length ? '' : ' no-docs');
+  let examChip = '';
+  if (exam) {
+    const n = daysUntil(exam.date);
+    examChip = `<span class="exam-chip ${n <= 3 ? 'soon' : ''}" title="${esc(exam.title)} — ${fmtDate(exam.date)}">📅 ${countdownText(n)}</span>`;
+  }
+  wrap.innerHTML = `
+    <div class="subject-head" data-sid="${g.id ?? ''}" title="${esc(g.name)}">
+      <span class="caret">▾</span>
+      <span class="swatch" style="background:${esc(g.color)}"></span>
+      <span class="name">${esc(g.name)}</span>
+      ${docs.length ? `<span class="count">${docs.length}</span>` : ''}
+      <span class="spacer"></span>
+      ${examChip}
+      ${g.id !== null ? '<button class="icon-btn" data-menu title="Options de la matière">⋯</button>' : ''}
+    </div>
+    <div class="subject-docs"></div>`;
+  const head = wrap.querySelector('.subject-head');
+  head.addEventListener('click', (e) => {
+    if (e.target.closest('[data-menu]')) {
+      e.stopPropagation();
+      subjectMenu(e.target.closest('[data-menu]'), g);
+      return;
+    }
+    if (!docs.length) {
+      if (g.id !== null) subjectMenu(head.querySelector('[data-menu]') || head, g);
+      return;
+    }
+    state.collapsed[key] = !state.collapsed[key];
+    store.set('collapsed', state.collapsed);
+    wrap.classList.toggle('collapsed', state.collapsed[key]);
+  });
+  head.addEventListener('dragover', () => head.classList.add('drop-target'));
+  head.addEventListener('dragleave', () => head.classList.remove('drop-target'));
+  head.addEventListener('drop', () => head.classList.remove('drop-target'));
+
+  const list = wrap.querySelector('.subject-docs');
+  const seen = new Set();
+  const add = (d, depth) => {
+    if (seen.has(d.id)) return;
+    seen.add(d.id);
+    list.append(docItem(d, depth));
+    childrenOf(d.id).forEach((c) => add(c, depth + 1));
+  };
+  roots.forEach((d) => add(d, 0));
+  return wrap;
 }
 
 function docItem(d, depth) {
@@ -355,10 +476,8 @@ function highlightActive() {
 }
 
 function fillSubjectSelects() {
-  const opts = `<option value="">Sans matière</option>` +
-    state.subjects.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join('');
   const sel = $('#doc-subject');
-  sel.innerHTML = opts;
+  sel.innerHTML = subjectOptions();
   if (state.current) sel.value = state.current.subject_id ?? '';
 }
 
@@ -391,49 +510,69 @@ function closeMenus() {
 
 function subjectMenu(anchor, subject) {
   showMenu(anchor, [
-    { label: '⬆ Importer dans cette matière', run: () => openImport([], subject.id) },
+    { label: '⬆ Importer un cours ici', run: () => openImport([], subject.id) },
     { label: '＋ Nouvelle note ici', run: () => newNote(subject.id) },
+    { label: '📅 Ajouter un examen', run: () => openEventDialog(null, { subject_id: subject.id }) },
     { label: '🃏 Réviser ses flashcards', run: () => { state.reviewSubject = subject.id; go('#review'); } },
-    { label: '✎ Renommer', run: () => renameSubject(subject) },
-    { label: '🎨 Changer la couleur', run: () => recolorSubject(subject) },
+    { label: '✎ Modifier (nom, semestre, couleur)', run: () => openSubjectDialog(subject) },
     { label: '🗑 Supprimer la matière', danger: true, run: () => deleteSubject(subject) },
   ]);
 }
 
-const SUBJECT_COLORS = ['#6366f1', '#ec4899', '#f59e0b', '#10b981', '#06b6d4', '#8b5cf6', '#ef4444', '#84cc16', '#0ea5e9', '#f97316'];
+const SUBJECT_COLORS = [
+  '#6366f1', '#ec4899', '#f59e0b', '#10b981', '#06b6d4', '#8b5cf6', '#ef4444', '#84cc16',
+  '#0ea5e9', '#f97316', '#14b8a6', '#a855f7', '#e11d48', '#65a30d', '#2563eb', '#d97706',
+];
 
-async function createSubject() {
-  const name = prompt('Nom de la nouvelle matière (ex. : Mathématiques, Droit civil…)');
-  if (!name || !name.trim()) return null;
+const subjectDlg = { subject: null, color: SUBJECT_COLORS[0], resolve: null };
+
+/** Fenêtre de création / modification d'une matière. Renvoie la matière enregistrée (ou null). */
+function openSubjectDialog(subject = null, defaults = {}) {
+  subjectDlg.subject = subject;
+  $('#subj-heading').textContent = subject ? 'Modifier la matière' : 'Nouvelle matière';
+  $('#subj-name').value = subject?.name || '';
+  const sems = new Set(['', ...Array.from({ length: 10 }, (_, i) => `S${i + 1}`), ...state.subjects.map((s) => s.semester || '')]);
+  $('#subj-semester').innerHTML = [...sems]
+    .sort((a, b) => semNum(a) - semNum(b))
+    .map((s) => `<option value="${s}">${s ? semLabel(s) : 'Aucun semestre'}</option>`)
+    .join('');
+  $('#subj-semester').value = subject ? subject.semester || '' : defaults.semester ?? currentSemester();
+  subjectDlg.color = subject?.color || SUBJECT_COLORS[state.subjects.length % SUBJECT_COLORS.length];
+  renderSwatches();
+  $('#dlg-subject').showModal();
+  setTimeout(() => $('#subj-name').focus(), 30);
+  return new Promise((resolve) => (subjectDlg.resolve = resolve));
+}
+
+function renderSwatches() {
+  $('#subj-colors').innerHTML = SUBJECT_COLORS.map(
+    (c) => `<button type="button" data-c="${c}" style="background:${c}" class="${c === subjectDlg.color ? 'active' : ''}" title="${c}"></button>`,
+  ).join('');
+}
+
+async function saveSubjectDialog() {
+  const name = $('#subj-name').value.trim();
+  if (!name) {
+    toast('Donne un nom à la matière.');
+    $('#subj-name').focus();
+    return;
+  }
+  const body = { name, semester: $('#subj-semester').value, color: subjectDlg.color };
   try {
-    const color = SUBJECT_COLORS[state.subjects.length % SUBJECT_COLORS.length];
-    const s = await api('/api/subjects', { method: 'POST', body: { name: name.trim(), color } });
+    const s = subjectDlg.subject
+      ? await api(`/api/subjects/${subjectDlg.subject.id}`, { method: 'PATCH', body })
+      : await api('/api/subjects', { method: 'POST', body });
+    $('#dlg-subject').close();
     await loadLibrary();
-    toast(`Matière « ${s.name} » créée.`);
-    return s;
+    toast(subjectDlg.subject ? 'Matière modifiée.' : `Matière « ${s.name} » créée.`);
+    subjectDlg.resolve?.(s);
+    subjectDlg.resolve = null;
   } catch (e) {
     toast(e.message, { error: true });
-    return null;
   }
 }
 
-async function renameSubject(subject) {
-  const name = prompt('Nouveau nom de la matière', subject.name);
-  if (!name || !name.trim() || name.trim() === subject.name) return;
-  try {
-    await api(`/api/subjects/${subject.id}`, { method: 'PATCH', body: { name: name.trim() } });
-    await loadLibrary();
-  } catch (e) {
-    toast(e.message, { error: true });
-  }
-}
-
-async function recolorSubject(subject) {
-  const i = SUBJECT_COLORS.indexOf(subject.color);
-  const color = SUBJECT_COLORS[(i + 1) % SUBJECT_COLORS.length];
-  await api(`/api/subjects/${subject.id}`, { method: 'PATCH', body: { color } });
-  await loadLibrary();
-}
+const createSubject = () => openSubjectDialog(null);
 
 async function deleteSubject(subject) {
   if (!confirm(`Supprimer la matière « ${subject.name} » ?\nSes documents sont conservés (rangés dans « Sans matière »).`)) return;
@@ -452,11 +591,15 @@ async function route() {
   if (m) return openDoc(+m[1]);
   await leaveDoc();
   if (location.hash.startsWith('#review')) return showReviewView();
+  if (location.hash.startsWith('#calendar')) return showCalendarView();
   return showHome();
 }
 
 function showView(name) {
-  for (const v of ['home', 'doc', 'review']) $(`#view-${v}`).hidden = v !== name;
+  for (const v of ['home', 'doc', 'review', 'calendar']) $(`#view-${v}`).hidden = v !== name;
+  $('#app').classList.toggle('wide', name === 'calendar'); // le calendrier prend la place du panneau IA
+  $('#btn-calendar').classList.toggle('active', name === 'calendar');
+  $('#btn-review-all').classList.toggle('active', name === 'review');
 }
 
 async function leaveDoc() {
@@ -492,6 +635,9 @@ async function showHome() {
     stat(s.total_cards, 'flashcards au total'),
   ].join('');
   $$('#home-stats [data-href]').forEach((el) => (el.onclick = () => go(el.dataset.href)));
+
+  await refreshUpcoming();
+  renderUpcomingList($('#home-exams'), (state.upcoming || []).slice(0, 5));
 
   const recent = $('#home-recent');
   recent.innerHTML = s.recent.length
@@ -593,13 +739,19 @@ async function openDoc(id, { force = false } = {}) {
 function setupDocTabs(keep) {
   const kind = state.current.kind;
   let tabs = null;
+  let preferred = null;
   if (kind === 'qcm') tabs = [['quiz', '▶ Jouer'], ['text', '📄 Texte']];
   else if (kind === 'flashcards') tabs = [['review', '🧠 Réviser'], ['cards', '🗂 Cartes'], ['text', '📄 Texte']];
+  else if (state.current.source_file) {
+    tabs = [['edit', '✎ Texte modifiable'], ['original', `📄 Original (${(state.current.source_name || '').split('.').pop().toUpperCase()})`]];
+    preferred = store.get('courseTab', 'edit');
+  }
   const bar = $('#doc-tabs');
   bar.hidden = !tabs;
   if (tabs) {
-    bar.innerHTML = tabs.map(([k, l]) => `<button data-dtab="${k}">${l}</button>`).join('');
-    showDocTab(keep && tabs.some(([k]) => k === keep) ? keep : tabs[0][0]);
+    bar.innerHTML = tabs.map(([k, l]) => `<button data-dtab="${k}">${esc(l)}</button>`).join('');
+    const has = (k) => k && tabs.some(([t]) => t === k);
+    showDocTab(has(keep) ? keep : has(preferred) ? preferred : tabs[0][0]);
   } else {
     showDocTab('edit');
   }
@@ -613,10 +765,14 @@ async function showDocTab(tab) {
   $('#pane-quiz').hidden = tab !== 'quiz';
   $('#pane-review').hidden = tab !== 'review';
   $('#pane-cards').hidden = tab !== 'cards';
+  $('#pane-original').hidden = tab !== 'original';
   $('#view-doc').classList.toggle('readonly', tab === 'text');
   $('#mode-switch').hidden = tab !== 'edit';
   editor.readOnly = tab === 'text';
-  if (tab === 'text') {
+  if (state.current.source_file && (tab === 'edit' || tab === 'original')) store.set('courseTab', tab);
+  if (tab === 'original') {
+    loadOriginal();
+  } else if (tab === 'text') {
     if (state.current.kind === 'flashcards') {
       const fresh = await api(`/api/documents/${state.current.id}`);
       state.current.content = fresh.content;
@@ -633,6 +789,46 @@ async function showDocTab(tab) {
     renderCardsEditor();
   }
   updateSelectionUI();
+}
+
+/** Affiche le fichier d'origine dans l'outil (PDF natif, ou Word/PowerPoint converti en PDF). */
+async function loadOriginal() {
+  const doc = state.current;
+  if (!doc?.source_file) return;
+  const frame = $('#orig-frame');
+  const pdfName = (doc.source_name || 'cours').replace(/\.[^.]+$/, '') + '.pdf';
+  const url = `/api/documents/${doc.id}/preview/${encodeURIComponent(pdfName)}`;
+  const ext = (doc.source_name || doc.source_file).split('.').pop().toLowerCase();
+  $('#orig-open').href = url;
+  $('#orig-download').href = `/api/documents/${doc.id}/source`;
+  $('#orig-download').setAttribute('download', doc.source_name || '');
+  $('#orig-info').textContent = doc.source_name + (ext === 'pdf' ? '' : ' — affiché en PDF (converti avec Microsoft Office)');
+  if (frame.dataset.doc === String(doc.id) && !frame.hidden) return;
+
+  const loading = $('#orig-loading');
+  frame.hidden = true;
+  frame.removeAttribute('src');
+  loading.hidden = false;
+  loading.classList.remove('error');
+  loading.querySelector('.spinner').hidden = false;
+  $('#orig-msg').textContent =
+    ext === 'pdf' ? 'Chargement du PDF…' : `Conversion du fichier ${ext.toUpperCase()} avec ${ext === 'pptx' ? 'PowerPoint' : 'Word'}… (quelques secondes la première fois)`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(await errorMessage(res));
+    await res.blob();
+  } catch (e) {
+    if (state.current?.id !== doc.id) return;
+    loading.classList.add('error');
+    loading.querySelector('.spinner').hidden = true;
+    $('#orig-msg').textContent = `⚠ ${e.message} — utilise « Télécharger le fichier » pour l'ouvrir.`;
+    return;
+  }
+  if (state.current?.id !== doc.id || state.docTab !== 'original') return;
+  frame.src = url;
+  frame.dataset.doc = String(doc.id);
+  frame.hidden = false;
+  loading.hidden = true;
 }
 
 function applyMode(mode, remember = true) {
@@ -1789,10 +1985,176 @@ async function renderCardsEditor() {
 async function showReviewView() {
   showView('review');
   const sel = $('#review-subject');
-  sel.innerHTML =
-    '<option value="">Toutes les matières</option>' + state.subjects.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join('');
+  sel.innerHTML = subjectOptions('Toutes les matières');
   sel.value = state.reviewSubject ?? '';
   await startReview($('#review-global'), { subjectId: sel.value ? +sel.value : null });
+}
+
+// ================================================================== calendrier
+const EVENT_KINDS = {
+  examen: 'Examen', partiel: 'Partiel', rattrapage: 'Rattrapage', oral: 'Oral',
+  tp: 'TP noté', projet: 'Rendu de projet', autre: 'Autre',
+};
+const MONTHS_SHORT = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
+const isoDate = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const eventColor = (ev) => ev.subject_color || '#6366f1';
+
+function renderUpcomingList(ul, events) {
+  if (!events.length) {
+    ul.innerHTML = '<li class="empty">Aucun examen prévu. <button class="link" data-add>Ajouter un examen</button></li>';
+    ul.querySelector('[data-add]').onclick = () => openEventDialog();
+    return;
+  }
+  ul.innerHTML = events
+    .map((ev) => {
+      const d = new Date(ev.date + 'T00:00:00');
+      const n = daysUntil(ev.date);
+      const time = ev.start_time ? `${ev.start_time}${ev.end_time ? '–' + ev.end_time : ''}` : '';
+      const meta = [EVENT_KINDS[ev.kind], ev.subject_name, time, ev.location].filter(Boolean).join(' · ');
+      return `<li data-ev="${ev.id}" style="--ev:${esc(eventColor(ev))}">
+        <div class="date"><b>${d.getDate()}</b><small>${MONTHS_SHORT[d.getMonth()]}</small></div>
+        <div class="info"><div class="t">${esc(ev.title)}</div><div class="m">${esc(meta)}</div></div>
+        <span class="countdown ${urgency(n)}">${countdownText(n)}</span>
+      </li>`;
+    })
+    .join('');
+  $$('[data-ev]', ul).forEach((li) => {
+    li.onclick = () => openEventDialog((state.upcoming || []).concat(state.calEvents || []).find((e) => e.id === +li.dataset.ev));
+  });
+}
+
+async function showCalendarView() {
+  showView('calendar');
+  if (!state.calMonth) {
+    const t = new Date();
+    state.calMonth = new Date(t.getFullYear(), t.getMonth(), 1);
+  }
+  await renderCalendar();
+}
+
+async function renderCalendar() {
+  const first = state.calMonth;
+  const start = new Date(first);
+  start.setDate(1 - ((first.getDay() + 6) % 7)); // lundi de la première semaine
+  const end = new Date(start);
+  end.setDate(start.getDate() + 41);
+  $('#cal-month').textContent = first.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
+  let events = [];
+  try {
+    [events] = await Promise.all([api(`/api/events?start=${isoDate(start)}&end=${isoDate(end)}`), refreshUpcoming()]);
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+  state.calEvents = events;
+  const byDay = new Map();
+  for (const ev of events) {
+    if (!byDay.has(ev.date)) byDay.set(ev.date, []);
+    byDay.get(ev.date).push(ev);
+  }
+  const today = isoDate(new Date());
+  let html = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'].map((d) => `<div class="cal-dow">${d}</div>`).join('');
+  for (let i = 0; i < 42; i++) {
+    const d = new Date(start);
+    d.setDate(start.getDate() + i);
+    const iso = isoDate(d);
+    const evs = byDay.get(iso) || [];
+    const cls = ['cal-day', d.getMonth() !== first.getMonth() ? 'other' : '', iso === today ? 'today' : '', d.getDay() % 6 === 0 ? 'weekend' : '']
+      .filter(Boolean)
+      .join(' ');
+    const chips = evs
+      .slice(0, 3)
+      .map(
+        (ev) =>
+          `<div class="cal-ev" data-ev="${ev.id}" style="--ev:${esc(eventColor(ev))}" title="${esc(ev.title)}${ev.location ? ' — ' + esc(ev.location) : ''}">${ev.start_time ? `<b>${ev.start_time}</b> ` : ''}${esc(ev.subject_name || ev.title)}</div>`,
+      )
+      .join('');
+    const more = evs.length > 3 ? `<div class="cal-more">+${evs.length - 3} autre(s)</div>` : '';
+    html += `<div class="${cls}" data-date="${iso}"><span class="num">${d.getDate()}</span>${chips}${more}</div>`;
+  }
+  const grid = $('#cal-grid');
+  grid.innerHTML = html;
+  renderUpcomingList($('#cal-upcoming'), (state.upcoming || []).slice(0, 12));
+}
+
+function shiftMonth(delta) {
+  const m = state.calMonth;
+  state.calMonth = new Date(m.getFullYear(), m.getMonth() + delta, 1);
+  renderCalendar();
+}
+
+const eventDlg = { event: null };
+
+function openEventDialog(event = null, defaults = {}) {
+  eventDlg.event = event;
+  $('#ev-heading').textContent = event ? "Modifier l'événement" : 'Nouvel examen';
+  $('#ev-subject').innerHTML = subjectOptions('— Aucune matière —');
+  const v = event || defaults;
+  $('#ev-subject').value = v.subject_id ?? '';
+  $('#ev-kind').value = v.kind || 'examen';
+  $('#ev-date').value = v.date || isoDate(new Date());
+  $('#ev-start').value = v.start_time || '';
+  $('#ev-end').value = v.end_time || '';
+  $('#ev-title').value = event?.title || '';
+  $('#ev-location').value = v.location || '';
+  $('#ev-notes').value = v.notes || '';
+  $('#ev-delete').hidden = !event;
+  $('#dlg-event').showModal();
+}
+
+function autoEventTitle() {
+  const s = subjectById(+$('#ev-subject').value);
+  return `${EVENT_KINDS[$('#ev-kind').value] || 'Examen'}${s ? ' — ' + s.name : ''}`;
+}
+
+async function saveEvent() {
+  const date = $('#ev-date').value;
+  if (!date) {
+    toast('Choisis une date.');
+    return;
+  }
+  const subject = $('#ev-subject').value;
+  const body = {
+    subject_id: subject ? +subject : null,
+    kind: $('#ev-kind').value,
+    date,
+    start_time: $('#ev-start').value,
+    end_time: $('#ev-end').value,
+    title: $('#ev-title').value.trim() || autoEventTitle(),
+    location: $('#ev-location').value,
+    notes: $('#ev-notes').value,
+  };
+  try {
+    if (eventDlg.event) await api(`/api/events/${eventDlg.event.id}`, { method: 'PATCH', body });
+    else await api('/api/events', { method: 'POST', body });
+    $('#dlg-event').close();
+    toast(eventDlg.event ? 'Événement modifié.' : `Ajouté au calendrier (${countdownText(daysUntil(date))}).`);
+    await afterEventChange(date);
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+async function deleteEvent() {
+  const ev = eventDlg.event;
+  if (!ev || !confirm(`Supprimer « ${ev.title} » du calendrier ?`)) return;
+  await api(`/api/events/${ev.id}`, { method: 'DELETE' });
+  $('#dlg-event').close();
+  toast('Événement supprimé.');
+  await afterEventChange();
+}
+
+async function afterEventChange(date) {
+  if (!$('#view-calendar').hidden) {
+    if (date) {
+      const d = new Date(date + 'T00:00:00');
+      state.calMonth = new Date(d.getFullYear(), d.getMonth(), 1);
+    }
+    await renderCalendar();
+  } else if (!$('#view-home').hidden) {
+    await showHome();
+  } else {
+    await refreshUpcoming();
+  }
 }
 
 // ================================================================== import
@@ -1805,10 +2167,7 @@ function fileIcon(name) {
 
 function fillImportSubjects(selected) {
   const sel = $('#imp-subject');
-  sel.innerHTML =
-    '<option value="">— Sans matière —</option>' +
-    state.subjects.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join('') +
-    '<option value="__new">＋ Nouvelle matière…</option>';
+  sel.innerHTML = subjectOptions('— Sans matière —') + '<option value="__new">＋ Nouvelle matière…</option>';
   sel.value = selected != null && selected !== '' && state.subjects.some((s) => String(s.id) === String(selected)) ? String(selected) : '';
 }
 
@@ -1909,6 +2268,11 @@ async function openSettings() {
   $('#set-temp').value = settings.temperature;
   $('#set-temp-val').textContent = settings.temperature;
   $('#set-think').checked = !!settings.think;
+  const sems = [...new Set(['', ...state.subjects.map((s) => s.semester || ''), settings.current_semester || ''])]
+    .filter((s, i) => s || i === 0)
+    .sort((a, b) => semNum(a) - semNum(b));
+  $('#set-semester').innerHTML = sems.map((s) => `<option value="${s}">${s ? semLabel(s) : 'Aucun (tout déplier)'}</option>`).join('');
+  $('#set-semester').value = settings.current_semester || '';
   $('#dlg-settings').showModal();
 }
 
@@ -1921,8 +2285,17 @@ async function saveSettings() {
         num_ctx: +$('#set-ctx').value,
         temperature: +$('#set-temp').value,
         think: $('#set-think').checked,
+        current_semester: $('#set-semester').value,
       },
     });
+    const semChanged = (state.settings?.current_semester || '') !== $('#set-semester').value;
+    state.settings = await api('/api/settings');
+    if (semChanged) {
+      // Le nouveau semestre en cours reprend l'affichage par défaut (déplié, les autres repliés).
+      for (const k of Object.keys(state.collapsed)) if (k.startsWith('sem:')) delete state.collapsed[k];
+      store.set('collapsed', state.collapsed);
+      renderLibrary();
+    }
     $('#dlg-settings').close();
     toast('Réglages enregistrés.');
     refreshHealth();
@@ -2000,7 +2373,45 @@ function bindEvents() {
     state.reviewSubject = '';
     go('#review');
   };
+  $('#btn-calendar').onclick = () => go('#calendar');
   $('#btn-settings').onclick = openSettings;
+
+  // Matières
+  $('#subj-save').onclick = saveSubjectDialog;
+  $('#subj-name').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      saveSubjectDialog();
+    }
+  });
+  $('#subj-colors').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-c]');
+    if (!b) return;
+    subjectDlg.color = b.dataset.c;
+    renderSwatches();
+  });
+  $('#dlg-subject').addEventListener('close', () => {
+    subjectDlg.resolve?.(null);
+    subjectDlg.resolve = null;
+  });
+
+  // Calendrier
+  $('#cal-add').onclick = () => openEventDialog();
+  $('#cal-prev').onclick = () => shiftMonth(-1);
+  $('#cal-next').onclick = () => shiftMonth(1);
+  $('#cal-today').onclick = () => {
+    const t = new Date();
+    state.calMonth = new Date(t.getFullYear(), t.getMonth(), 1);
+    renderCalendar();
+  };
+  $('#cal-grid').addEventListener('click', (e) => {
+    const chip = e.target.closest('[data-ev]');
+    if (chip) return openEventDialog((state.calEvents || []).find((ev) => ev.id === +chip.dataset.ev));
+    const day = e.target.closest('[data-date]');
+    if (day) openEventDialog(null, { date: day.dataset.date });
+  });
+  $('#ev-save').onclick = saveEvent;
+  $('#ev-delete').onclick = deleteEvent;
   $('#search').addEventListener('input', doSearch);
   $('#search').addEventListener('focus', doSearch);
   $('#search').addEventListener('blur', () => setTimeout(() => ($('#search-results').hidden = true), 200));
@@ -2031,7 +2442,11 @@ function bindEvents() {
   });
   $('#doc-subject').addEventListener('change', changeSubject);
   $$('#mode-switch button').forEach((b) => (b.onclick = () => applyMode(b.dataset.mode)));
-  $('#btn-source').onclick = () => state.current && window.open(`/api/documents/${state.current.id}/source`, '_blank');
+  $('#btn-source').onclick = () => {
+    if (!state.current) return;
+    if ($('#doc-tabs [data-dtab="original"]')) showDocTab('original');
+    else window.open(`/api/documents/${state.current.id}/source`, '_blank');
+  };
   $('#btn-export').onclick = (e) => {
     e.stopPropagation();
     const m = $('#menu-export');
@@ -2277,6 +2692,7 @@ async function init() {
   applyMode(state.mode, false);
   setAITab('generate');
   try {
+    state.settings = await api('/api/settings');
     await loadLibrary();
   } catch (e) {
     toast('Impossible de charger la bibliothèque : ' + e.message, { error: true });

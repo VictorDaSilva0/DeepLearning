@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import __version__, config, db, importers, llm, prompts, render, srs
+from . import __version__, config, db, importers, llm, office, prompts, render, srs
 
 log = logging.getLogger("deeplearning")
 
@@ -106,6 +106,7 @@ class SettingsIn(BaseModel):
     num_ctx: int | None = Field(None, ge=2048, le=262144)
     temperature: float | None = Field(None, ge=0, le=2)
     think: bool | None = None
+    current_semester: str | None = Field(None, pattern=r"^(S\d{1,2})?$")
 
 
 @app.put("/api/settings")
@@ -118,6 +119,8 @@ def put_settings(body: SettingsIn) -> dict[str, Any]:
 class SubjectIn(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=120)
     color: str | None = Field(None, pattern=r"^#[0-9a-fA-F]{6}$")
+    semester: str | None = Field(None, pattern=r"^(S\d{1,2})?$")
+    position: int | None = None
 
 
 @app.get("/api/subjects")
@@ -130,14 +133,20 @@ def create_subject(body: SubjectIn) -> dict[str, Any]:
     if not body.name or not body.name.strip():
         raise HTTPException(400, "Le nom de la matière est obligatoire.")
     try:
-        return db.create_subject(body.name.strip(), body.color)
+        return db.create_subject(body.name.strip(), body.color, body.semester or "", body.position)
     except Exception as exc:
-        raise HTTPException(400, "Une matière porte déjà ce nom.") from exc
+        raise HTTPException(400, "Une matière porte déjà ce nom dans ce semestre.") from exc
 
 
 @app.patch("/api/subjects/{subject_id}")
 def update_subject(subject_id: int, body: SubjectIn) -> dict[str, Any]:
-    subject = db.update_subject(subject_id, body.name.strip() if body.name else None, body.color)
+    fields = body.model_dump(exclude_none=True)
+    if "name" in fields:
+        fields["name"] = fields["name"].strip()
+    try:
+        subject = db.update_subject(subject_id, **fields)
+    except Exception as exc:
+        raise HTTPException(400, "Une matière porte déjà ce nom dans ce semestre.") from exc
     if not subject:
         raise HTTPException(404, "Matière introuvable.")
     return subject
@@ -205,8 +214,29 @@ def update_document(doc_id: int, body: DocumentIn) -> dict[str, Any]:
 def delete_document(doc_id: int) -> dict[str, bool]:
     source = db.delete_document(doc_id)
     if source:
-        (config.UPLOAD_DIR / source).unlink(missing_ok=True)
+        path = config.UPLOAD_DIR / source
+        path.unlink(missing_ok=True)
+        office.preview_path(path).unlink(missing_ok=True)
     return {"ok": True}
+
+
+@app.get("/api/documents/{doc_id}/preview")
+@app.get("/api/documents/{doc_id}/preview/{filename}")  # nom de fichier dans l'URL = titre du lecteur PDF
+async def document_preview(doc_id: int, filename: str | None = None) -> FileResponse:
+    """Le cours d'origine en PDF, pour l'afficher dans l'outil (Word / PowerPoint convertis via Office)."""
+    doc = _get_doc_or_404(doc_id)
+    if not doc.get("source_file"):
+        raise HTTPException(404, "Ce document n'a pas de fichier d'origine.")
+    path = config.UPLOAD_DIR / doc["source_file"]
+    if not path.exists():
+        raise HTTPException(404, "Fichier d'origine introuvable.")
+    if path.suffix.lower() != ".pdf":
+        try:
+            path = await asyncio.to_thread(office.to_pdf, path)
+        except office.ConversionError as exc:
+            raise HTTPException(501, str(exc)) from exc
+    name = Path(doc.get("source_name") or path.name).stem + ".pdf"
+    return FileResponse(path, media_type="application/pdf", filename=name, content_disposition_type="inline")
 
 
 @app.get("/api/documents/{doc_id}/source")
@@ -677,6 +707,114 @@ def review_card(card_id: int, body: ReviewIn) -> dict[str, Any]:
     updated = db.update_card(card_id, **srs.schedule(card, body.grade))
     updated["intervals"] = srs.preview_intervals(updated)
     return updated
+
+
+# =========================================================================== calendrier
+
+EVENT_KINDS = {"examen", "partiel", "rattrapage", "oral", "tp", "projet", "autre"}
+EVENT_LABELS = {
+    "examen": "Examen", "partiel": "Partiel", "rattrapage": "Rattrapage", "oral": "Oral",
+    "tp": "TP noté", "projet": "Rendu de projet", "autre": "Autre",
+}
+
+
+class EventIn(BaseModel):
+    subject_id: int | None = None
+    title: str | None = Field(None, max_length=200)
+    kind: str | None = None
+    date: str | None = Field(None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    start_time: str | None = Field(None, pattern=r"^(\d{2}:\d{2})?$")
+    end_time: str | None = Field(None, pattern=r"^(\d{2}:\d{2})?$")
+    location: str | None = Field(None, max_length=200)
+    notes: str | None = Field(None, max_length=4000)
+
+
+def _clean_event(fields: dict[str, Any]) -> dict[str, Any]:
+    if "kind" in fields and fields["kind"] not in EVENT_KINDS:
+        raise HTTPException(400, "Type d'événement inconnu.")
+    for key in ("start_time", "end_time", "location", "notes"):
+        if key in fields and not (fields[key] or "").strip():
+            fields[key] = None
+    if "title" in fields:
+        fields["title"] = (fields["title"] or "").strip()
+    return fields
+
+
+@app.get("/api/events")
+def events(start: str | None = None, end: str | None = None, limit: int | None = None) -> list[dict[str, Any]]:
+    return db.list_events(start, end, limit)
+
+
+@app.get("/api/events/upcoming")
+def upcoming_events(limit: int = 8) -> list[dict[str, Any]]:
+    return db.list_events(start=db.today(), limit=limit)
+
+
+@app.post("/api/events")
+def create_event(body: EventIn) -> dict[str, Any]:
+    fields = _clean_event(body.model_dump())
+    if not fields.get("date"):
+        raise HTTPException(400, "La date est obligatoire.")
+    fields["kind"] = fields.get("kind") or "examen"
+    if not fields.get("title"):
+        subject = next((s for s in db.list_subjects() if s["id"] == fields.get("subject_id")), None)
+        fields["title"] = f"{EVENT_LABELS[fields['kind']]}" + (f" — {subject['name']}" if subject else "")
+    return db.create_event(**fields)
+
+
+@app.patch("/api/events/{event_id}")
+def update_event(event_id: int, body: EventIn) -> dict[str, Any]:
+    if not db.get_event(event_id):
+        raise HTTPException(404, "Événement introuvable.")
+    fields = _clean_event(body.model_dump(exclude_unset=True))
+    if "title" in fields and not fields["title"]:
+        raise HTTPException(400, "Le titre ne peut pas être vide.")
+    return db.update_event(event_id, **fields) or {}
+
+
+@app.delete("/api/events/{event_id}")
+def delete_event(event_id: int) -> dict[str, bool]:
+    db.delete_event(event_id)
+    return {"ok": True}
+
+
+def _ics_escape(text: str) -> str:
+    return text.replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\n", "\\n")
+
+
+@app.get("/api/events.ics")
+def events_ics() -> Response:
+    """Export iCalendar, à importer dans Google Agenda, Outlook, le calendrier du téléphone…"""
+    from datetime import date as _date, timedelta
+
+    lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//DeepLearning//Examens//FR", "CALSCALE:GREGORIAN"]
+    stamp = db.now().replace("-", "").replace(":", "")
+    for ev in db.list_events():
+        day = ev["date"].replace("-", "")
+        lines += ["BEGIN:VEVENT", f"UID:deeplearning-event-{ev['id']}@localhost", f"DTSTAMP:{stamp}"]
+        if ev["start_time"]:
+            start = ev["start_time"].replace(":", "")
+            end_time = ev["end_time"]
+            if not end_time or end_time <= ev["start_time"]:  # sans heure de fin : 1 h par défaut
+                h, m = map(int, ev["start_time"].split(":"))
+                end_time = f"{min(h + 1, 23):02d}:{m:02d}"
+            lines += [f"DTSTART:{day}T{start}00", f"DTEND:{day}T{end_time.replace(':', '')}00"]
+        else:
+            nxt = (_date.fromisoformat(ev["date"]) + timedelta(days=1)).isoformat().replace("-", "")
+            lines += [f"DTSTART;VALUE=DATE:{day}", f"DTEND;VALUE=DATE:{nxt}"]
+        lines.append(f"SUMMARY:{_ics_escape(ev['title'])}")
+        if ev["location"]:
+            lines.append(f"LOCATION:{_ics_escape(ev['location'])}")
+        desc = " · ".join(x for x in (EVENT_LABELS.get(ev["kind"], ""), ev["subject_name"] or "", ev["notes"] or "") if x)
+        if desc:
+            lines.append(f"DESCRIPTION:{_ics_escape(desc)}")
+        lines.append("END:VEVENT")
+    lines.append("END:VCALENDAR")
+    return Response(
+        "\r\n".join(lines) + "\r\n",
+        media_type="text/calendar; charset=utf-8",
+        headers={"Content-Disposition": _content_disposition("attachment", "examens.ics")},
+    )
 
 
 # =========================================================================== QCM & statistiques

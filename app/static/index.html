@@ -5,12 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>DeepLearning — atelier de révision</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧠</text></svg>">
-  <link rel="stylesheet" href="/static/style.css?v=1">
+  <link rel="stylesheet" href="/static/style.css?v=2">
   <!-- KaTeX (formules) : optionnel, chargé depuis un CDN quand Internet est disponible. -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
-  <script defer src="/static/app.js?v=1"></script>
+  <script defer src="/static/app.js?v=2"></script>
 </head>
 <body>
 <div id="app" class="layout">
@@ -32,9 +32,14 @@
       <div id="search-results" class="search-results" hidden></div>
     </div>
 
-    <button id="btn-review-all" class="review-pill" title="Réviser les flashcards du jour">
-      🃏 À réviser aujourd'hui <b id="due-count">0</b>
-    </button>
+    <div class="side-nav">
+      <button id="btn-calendar" class="nav-pill" title="Calendrier des examens">
+        📅 Examens <b id="next-exam" hidden></b>
+      </button>
+      <button id="btn-review-all" class="nav-pill review-pill" title="Réviser les flashcards du jour">
+        🃏 Réviser <b id="due-count">0</b>
+      </button>
+    </div>
 
     <nav id="library" class="library"></nav>
 
@@ -63,6 +68,12 @@
         </div>
 
         <div class="stat-grid" id="home-stats"></div>
+
+        <div class="card">
+          <div class="row"><h3 style="margin:0">📅 Prochains examens</h3><span class="spacer"></span>
+            <a href="#calendar" class="btn small ghost">Voir le calendrier →</a></div>
+          <ul id="home-exams" class="upcoming" style="margin-top:8px"></ul>
+        </div>
 
         <div class="home-cols">
           <div class="card">
@@ -172,9 +183,52 @@
         </footer>
       </div>
 
+      <div id="pane-original" class="pane" hidden>
+        <div class="original-bar">
+          <span id="orig-info" class="muted small"></span>
+          <span class="spacer"></span>
+          <a id="orig-open" class="btn small" target="_blank" rel="noopener">↗ Nouvel onglet</a>
+          <a id="orig-download" class="btn small" download>⤓ Télécharger le fichier</a>
+        </div>
+        <div class="original-frame">
+          <div id="orig-loading" class="empty-state">
+            <span class="spinner" style="display:inline-block"></span>
+            <p id="orig-msg">Préparation de l'aperçu…</p>
+          </div>
+          <iframe id="orig-frame" title="Cours d'origine" hidden></iframe>
+        </div>
+      </div>
       <div id="pane-quiz" class="pane scroll" hidden></div>
       <div id="pane-review" class="pane scroll" hidden></div>
       <div id="pane-cards" class="pane scroll" hidden></div>
+    </section>
+
+    <!-- Calendrier -->
+    <section id="view-calendar" class="view scroll" hidden>
+      <div class="cal-page">
+        <div class="cal-head">
+          <h2>📅 Calendrier des examens</h2>
+          <span class="spacer"></span>
+          <a class="btn small ghost" href="/api/events.ics" title="Fichier à importer dans Google Agenda, Outlook ou le calendrier du téléphone">⤓ Exporter (.ics)</a>
+          <button id="cal-add" class="btn primary small">＋ Ajouter un examen</button>
+        </div>
+        <div class="cal-layout">
+          <div class="cal-main card">
+            <div class="cal-nav">
+              <button id="cal-prev" class="icon-btn" title="Mois précédent">‹</button>
+              <b id="cal-month"></b>
+              <button id="cal-next" class="icon-btn" title="Mois suivant">›</button>
+              <span class="spacer"></span>
+              <button id="cal-today" class="btn small">Aujourd'hui</button>
+            </div>
+            <div id="cal-grid" class="cal-grid"></div>
+          </div>
+          <aside class="cal-side card">
+            <h3>À venir</h3>
+            <ul id="cal-upcoming" class="upcoming"></ul>
+          </aside>
+        </div>
+      </div>
     </section>
 
     <!-- Révision globale -->
@@ -303,9 +357,79 @@
   </form>
 </dialog>
 
+<dialog id="dlg-subject" class="dialog">
+  <form method="dialog">
+    <h3 id="subj-heading">Nouvelle matière</h3>
+    <label class="field">Nom du module
+      <input id="subj-name" maxlength="120" placeholder="ex. : Administration Linux" autocomplete="off">
+    </label>
+    <label class="field">Semestre
+      <select id="subj-semester" class="select"></select>
+    </label>
+    <div class="field">Couleur
+      <div id="subj-colors" class="swatches"></div>
+    </div>
+    <footer>
+      <span class="spacer"></span>
+      <button value="cancel" class="btn">Annuler</button>
+      <button type="button" id="subj-save" class="btn primary">Enregistrer</button>
+    </footer>
+  </form>
+</dialog>
+
+<dialog id="dlg-event" class="dialog">
+  <form method="dialog">
+    <h3 id="ev-heading">Nouvel examen</h3>
+    <label class="field">Matière
+      <select id="ev-subject" class="select"></select>
+    </label>
+    <div class="grid2">
+      <label class="field">Type
+        <select id="ev-kind" class="select">
+          <option value="examen">Examen</option>
+          <option value="partiel">Partiel</option>
+          <option value="rattrapage">Rattrapage</option>
+          <option value="oral">Oral</option>
+          <option value="tp">TP noté</option>
+          <option value="projet">Rendu de projet</option>
+          <option value="autre">Autre</option>
+        </select>
+      </label>
+      <label class="field">Date
+        <input type="date" id="ev-date">
+      </label>
+      <label class="field">Début
+        <input type="time" id="ev-start">
+      </label>
+      <label class="field">Fin
+        <input type="time" id="ev-end">
+      </label>
+    </div>
+    <label class="field">Titre
+      <input id="ev-title" maxlength="200" placeholder="Rempli automatiquement si vide (ex. : Examen — TCP/IP)">
+    </label>
+    <label class="field">Salle / lieu
+      <input id="ev-location" maxlength="200" placeholder="ex. : Salle B204, en ligne…">
+    </label>
+    <label class="field">Notes
+      <textarea id="ev-notes" rows="3" placeholder="Chapitres au programme, documents autorisés, calculatrice…"></textarea>
+    </label>
+    <footer>
+      <button type="button" id="ev-delete" class="btn danger" hidden>Supprimer</button>
+      <span class="spacer"></span>
+      <button value="cancel" class="btn">Annuler</button>
+      <button type="button" id="ev-save" class="btn primary">Enregistrer</button>
+    </footer>
+  </form>
+</dialog>
+
 <dialog id="dlg-settings" class="dialog">
   <form method="dialog" id="settings-form">
-    <h3>Réglages de l'IA</h3>
+    <h3>Réglages</h3>
+    <label class="field">Semestre en cours
+      <select id="set-semester" class="select"></select>
+      <small class="muted">Il est déplié en premier dans la bibliothèque, les autres sont repliés.</small>
+    </label>
     <label class="field">Modèle Ollama
       <select id="set-model" class="select"></select>
       <small class="muted" id="set-model-caps"></small>

@@ -13,10 +13,27 @@ from . import config
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS subjects (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    name        TEXT NOT NULL UNIQUE,
+    name        TEXT NOT NULL,
+    semester    TEXT NOT NULL DEFAULT '',
+    position    INTEGER NOT NULL DEFAULT 0,
     color       TEXT NOT NULL DEFAULT '#6366f1',
+    created_at  TEXT NOT NULL,
+    UNIQUE(name, semester)
+);
+
+CREATE TABLE IF NOT EXISTS events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    subject_id  INTEGER REFERENCES subjects(id) ON DELETE SET NULL,
+    title       TEXT NOT NULL,
+    kind        TEXT NOT NULL DEFAULT 'examen',
+    date        TEXT NOT NULL,
+    start_time  TEXT,
+    end_time    TEXT,
+    location    TEXT,
+    notes       TEXT,
     created_at  TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_events_date ON events(date);
 
 CREATE TABLE IF NOT EXISTS documents (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -104,8 +121,42 @@ def connect() -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
+def _migrate() -> None:
+    """Mises à jour du schéma des bases créées par une version précédente."""
+    conn = sqlite3.connect(config.DB_PATH, timeout=10)
+    try:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(subjects)")]
+        if cols and "semester" not in cols:
+            # v0.1 : nom de matière unique → (nom, semestre) unique + ordre d'affichage.
+            conn.execute("PRAGMA foreign_keys = OFF")
+            conn.executescript(
+                """
+                BEGIN;
+                CREATE TABLE subjects_new (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name        TEXT NOT NULL,
+                    semester    TEXT NOT NULL DEFAULT '',
+                    position    INTEGER NOT NULL DEFAULT 0,
+                    color       TEXT NOT NULL DEFAULT '#6366f1',
+                    created_at  TEXT NOT NULL,
+                    UNIQUE(name, semester)
+                );
+                INSERT INTO subjects_new(id, name, color, created_at)
+                    SELECT id, name, color, created_at FROM subjects;
+                DROP TABLE subjects;
+                ALTER TABLE subjects_new RENAME TO subjects;
+                COMMIT;
+                """
+            )
+            conn.execute("PRAGMA foreign_keys = ON")
+    finally:
+        conn.close()
+
+
 def init_db() -> None:
     config.ensure_dirs()
+    if config.DB_PATH.exists():
+        _migrate()
     with connect() as conn:
         conn.executescript(SCHEMA)
 
@@ -154,27 +205,36 @@ def list_subjects() -> list[dict[str, Any]]:
     with connect() as conn:
         rows = conn.execute(
             "SELECT s.*, (SELECT COUNT(*) FROM documents d WHERE d.subject_id = s.id) AS doc_count "
-            "FROM subjects s ORDER BY s.name COLLATE NOCASE"
+            "FROM subjects s ORDER BY s.semester, s.position, s.name COLLATE NOCASE"
         ).fetchall()
     return [dict(r) for r in rows]
 
 
-def create_subject(name: str, color: str | None = None) -> dict[str, Any]:
+def create_subject(
+    name: str, color: str | None = None, semester: str = "", position: int | None = None
+) -> dict[str, Any]:
     with connect() as conn:
+        if position is None:
+            position = conn.execute(
+                "SELECT COALESCE(MAX(position), 0) + 1 FROM subjects WHERE semester = ?", (semester,)
+            ).fetchone()[0]
         cur = conn.execute(
-            "INSERT INTO subjects(name, color, created_at) VALUES(?, ?, ?)",
-            (name, color or "#6366f1", now()),
+            "INSERT INTO subjects(name, semester, position, color, created_at) VALUES(?, ?, ?, ?, ?)",
+            (name, semester, position, color or "#6366f1", now()),
         )
         row = conn.execute("SELECT * FROM subjects WHERE id = ?", (cur.lastrowid,)).fetchone()
     return dict(row)
 
 
-def update_subject(subject_id: int, name: str | None, color: str | None) -> dict[str, Any] | None:
+def update_subject(subject_id: int, **fields: Any) -> dict[str, Any] | None:
+    allowed = {"name", "color", "semester", "position"}
+    sets = [(k, v) for k, v in fields.items() if k in allowed and v is not None]
     with connect() as conn:
-        if name is not None:
-            conn.execute("UPDATE subjects SET name = ? WHERE id = ?", (name, subject_id))
-        if color is not None:
-            conn.execute("UPDATE subjects SET color = ? WHERE id = ?", (color, subject_id))
+        if sets:
+            conn.execute(
+                f"UPDATE subjects SET {', '.join(f'{k} = ?' for k, _ in sets)} WHERE id = ?",
+                [v for _, v in sets] + [subject_id],
+            )
         row = conn.execute("SELECT * FROM subjects WHERE id = ?", (subject_id,)).fetchone()
     return dict(row) if row else None
 
@@ -388,6 +448,68 @@ def stats() -> dict[str, Any]:
         "attempts": [dict(a) for a in attempts],
         "recent": [dict(r) for r in recent],
     }
+
+
+# --------------------------------------------------------------------------- calendrier
+
+EVENT_COLUMNS = ("subject_id", "title", "kind", "date", "start_time", "end_time", "location", "notes")
+EVENT_SELECT = (
+    "SELECT e.*, s.name AS subject_name, s.color AS subject_color, s.semester AS subject_semester "
+    "FROM events e LEFT JOIN subjects s ON s.id = e.subject_id"
+)
+
+
+def list_events(start: str | None = None, end: str | None = None, limit: int | None = None) -> list[dict[str, Any]]:
+    sql, params = EVENT_SELECT, []
+    where = []
+    if start:
+        where.append("e.date >= ?")
+        params.append(start)
+    if end:
+        where.append("e.date <= ?")
+        params.append(end)
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY e.date, COALESCE(e.start_time, ''), e.id"
+    if limit:
+        sql += " LIMIT ?"
+        params.append(limit)
+    with connect() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_event(event_id: int) -> dict[str, Any] | None:
+    with connect() as conn:
+        row = conn.execute(EVENT_SELECT + " WHERE e.id = ?", (event_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def create_event(**fields: Any) -> dict[str, Any]:
+    values = [fields.get(k) for k in EVENT_COLUMNS]
+    with connect() as conn:
+        cur = conn.execute(
+            f"INSERT INTO events({', '.join(EVENT_COLUMNS)}, created_at) VALUES({', '.join('?' * len(EVENT_COLUMNS))}, ?)",
+            values + [now()],
+        )
+        event_id = cur.lastrowid
+    return get_event(event_id)  # type: ignore[return-value]
+
+
+def update_event(event_id: int, **fields: Any) -> dict[str, Any] | None:
+    sets = [(k, v) for k, v in fields.items() if k in EVENT_COLUMNS]
+    if sets:
+        with connect() as conn:
+            conn.execute(
+                f"UPDATE events SET {', '.join(f'{k} = ?' for k, _ in sets)} WHERE id = ?",
+                [v for _, v in sets] + [event_id],
+            )
+    return get_event(event_id)
+
+
+def delete_event(event_id: int) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM events WHERE id = ?", (event_id,))
 
 
 # --------------------------------------------------------------------------- cache LLM
