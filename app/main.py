@@ -33,9 +33,10 @@ app = FastAPI(title="DeepLearning", version=__version__, lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=config.STATIC_DIR), name="static")
 
 KINDS = {
-    "cours", "note", "fiche", "resume", "exercices", "qcm", "flashcards",
-    "explication", "glossaire", "plan", "questions",
+    "cours", "td", "tp", "note", "fiche", "resume", "exercices", "qcm", "flashcards",
+    "explication", "glossaire", "plan", "questions", "corrige",
 }
+SOURCE_KINDS = {"cours", "td", "tp"}  # cours = CM
 
 
 # =========================================================================== utilitaires
@@ -276,11 +277,15 @@ def render_markdown(body: RenderIn) -> dict[str, str]:
 # =========================================================================== import
 
 @app.post("/api/import")
-async def import_files(files: list[UploadFile] = File(...), subject_id: str | None = Form(None)) -> list[dict[str, Any]]:
+async def import_files(
+    files: list[UploadFile] = File(...),
+    subject_id: str | None = Form(None),
+    kinds: list[str] = Form(default=[]),  # type de chaque fichier (cours/td/tp), dans l'ordre ; sinon détecté
+) -> list[dict[str, Any]]:
     sid = int(subject_id) if subject_id and subject_id.strip().isdigit() else None
     results: list[dict[str, Any]] = []
     max_bytes = config.MAX_UPLOAD_MB * 1024 * 1024
-    for upload in files:
+    for index, upload in enumerate(files):
         name = Path(upload.filename or "fichier").name
         ext = Path(name).suffix.lower()
         if ext not in config.ALLOWED_IMPORT_EXT:
@@ -311,10 +316,11 @@ async def import_files(files: list[UploadFile] = File(...), subject_id: str | No
         keep_source = ext in {".pdf", ".docx", ".pptx"}
         if not keep_source:
             path.unlink(missing_ok=True)
+        kind = kinds[index] if index < len(kinds) and kinds[index] in SOURCE_KINDS else importers.guess_kind(name)
         doc = db.create_document(
             res.title,
             res.markdown,
-            "cours",
+            kind,
             sid,
             source_file=stored if keep_source else None,
             source_name=name,
@@ -456,7 +462,8 @@ async def generate(body: GenerateIn) -> StreamingResponse:
             {
                 "role": "user",
                 "content": prompts.task_user_prompt(
-                    body.task, doc["title"], source, body.count, body.difficulty, body.instructions.strip()
+                    body.task, doc["title"], source, body.count, body.difficulty, body.instructions.strip(),
+                    doc_kind=doc["kind"],
                 ),
             },
         ]

@@ -199,7 +199,10 @@ function liveRenderer(target, interval = 350) {
 
 // ------------------------------------------------------------------ constantes
 const KINDS = {
-  cours: { icon: '📘', label: 'Cours' },
+  cours: { icon: '📘', label: 'Cours (CM)' },
+  td: { icon: '📗', label: 'TD' },
+  tp: { icon: '🔧', label: 'TP' },
+  corrige: { icon: '🔑', label: 'Corrigé' },
   note: { icon: '📝', label: 'Note' },
   fiche: { icon: '📋', label: 'Fiche' },
   resume: { icon: '🧾', label: 'Résumé' },
@@ -222,8 +225,25 @@ const TASKS = [
   { id: 'explication', icon: '💡', label: 'Explication simple', desc: 'Analogies, exemples concrets' },
   { id: 'glossaire', icon: '📖', label: 'Glossaire', desc: 'Tous les termes techniques' },
   { id: 'plan', icon: '🗺️', label: 'Plan / carte mentale', desc: "L'organisation des idées" },
+  { id: 'corrige', icon: '🔑', label: 'Corrigé détaillé', desc: 'Résout les exercices du TD / TP' },
   { id: 'custom', icon: '💬', label: 'Demande libre', desc: 'Ta propre consigne' },
 ];
+
+/** Catégories des documents de cours importés (le type « cours » correspond au CM). */
+const CATEGORIES = [
+  { kind: 'cours', short: 'CM', label: 'Cours magistraux' },
+  { kind: 'td', short: 'TD', label: 'Travaux dirigés' },
+  { kind: 'tp', short: 'TP', label: 'Travaux pratiques' },
+];
+const SOURCE_KINDS = CATEGORIES.map((c) => c.kind);
+
+/** Même détection que le serveur : « TD2_routage.pdf » → td, « TP-Docker.pptx » → tp, sinon CM. */
+function guessKind(filename) {
+  const stem = filename.replace(/\.[^.]+$/, '');
+  if (/(?:^|[^a-z])td(?![a-z])|travaux[\s_-]*dirig/i.test(stem)) return 'td';
+  if (/(?:^|[^a-z])tp(?![a-z])|travaux[\s_-]*pratiq/i.test(stem)) return 'tp';
+  return 'cours';
+}
 
 const TOOLS = [
   { id: 'corriger', label: '✔ Corriger' },
@@ -456,7 +476,23 @@ function subjectGroup(g, docs, byId, exam) {
     list.append(docItem(d, depth));
     childrenOf(d.id).forEach((c) => add(c, depth + 1));
   };
-  roots.forEach((d) => add(d, 0));
+  // Sous-groupes CM / TD / TP (les documents générés restent rangés sous leur document d'origine).
+  const groups = [
+    ...CATEGORIES.map((c) => ({ ...c, docs: roots.filter((d) => d.kind === c.kind) })),
+    { kind: 'autre', short: 'Notes & fiches', label: 'Notes et documents', docs: roots.filter((d) => !SOURCE_KINDS.includes(d.kind)) },
+  ];
+  const labelled = groups.some((grp) => grp.kind !== 'autre' && grp.docs.length);
+  for (const grp of groups) {
+    if (!grp.docs.length) continue;
+    if (labelled) {
+      const lbl = document.createElement('div');
+      lbl.className = 'cat-label';
+      lbl.title = grp.label;
+      lbl.innerHTML = `<span>${esc(grp.short)}</span><span class="n">${grp.docs.length}</span>`;
+      list.append(lbl);
+    }
+    grp.docs.forEach((d) => add(d, 0));
+  }
   return wrap;
 }
 
@@ -624,12 +660,13 @@ async function showHome() {
   updateDueBadge(s.due_cards);
   const k = s.kinds || {};
   const generated = Object.entries(k)
-    .filter(([kind]) => !['cours', 'note'].includes(kind))
+    .filter(([kind]) => ![...SOURCE_KINDS, 'note'].includes(kind))
     .reduce((a, [, n]) => a + n, 0);
+  const imported = SOURCE_KINDS.reduce((a, kind) => a + (k[kind] || 0), 0);
   const stat = (num, label, href) =>
     `<div class="stat${href ? ' clickable' : ''}" ${href ? `data-href="${href}"` : ''}><div class="num">${num}</div><div class="lbl">${label}</div></div>`;
   $('#home-stats').innerHTML = [
-    stat(k.cours || 0, 'cours importés'),
+    stat(imported, `cours importés · ${k.cours || 0} CM, ${k.td || 0} TD, ${k.tp || 0} TP`),
     stat(generated, 'fiches, QCM, exercices… générés'),
     stat(s.due_cards, "cartes à réviser aujourd'hui", '#review'),
     stat(s.total_cards, 'flashcards au total'),
@@ -702,8 +739,7 @@ async function openDoc(id, { force = false } = {}) {
   state.dirty = false;
   showView('doc');
   $('#doc-title').value = doc.title;
-  const kind = KINDS[doc.kind] || { icon: '📄', label: doc.kind };
-  $('#doc-kind').textContent = `${kind.icon} ${kind.label}`;
+  updateKindUI();
   fillSubjectSelects();
   editor.value = doc.content;
   if (!sameDoc) {
@@ -734,6 +770,36 @@ async function openDoc(id, { force = false } = {}) {
       gotoMatch(1);
     }
   }
+}
+
+/** Badge du type de document, ou sélecteur CM / TD / TP / Note pour les documents de cours. */
+function updateKindUI() {
+  const doc = state.current;
+  const kind = KINDS[doc.kind] || { icon: '📄', label: doc.kind };
+  const editable = SOURCE_KINDS.includes(doc.kind) || doc.kind === 'note';
+  $('#doc-kind').textContent = `${kind.icon} ${kind.label}`;
+  $('#doc-kind').hidden = editable;
+  $('#doc-category').hidden = !editable;
+  if (editable) $('#doc-category').value = doc.kind;
+}
+
+async function changeKind() {
+  const doc = state.current;
+  if (!doc) return;
+  const kind = $('#doc-category').value;
+  try {
+    await api(`/api/documents/${doc.id}`, { method: 'PATCH', body: { kind } });
+  } catch (e) {
+    toast(e.message, { error: true });
+    $('#doc-category').value = doc.kind;
+    return;
+  }
+  doc.kind = kind;
+  const entry = state.docs.find((d) => d.id === doc.id);
+  if (entry) entry.kind = kind;
+  updateKindUI();
+  renderLibrary();
+  toast(`Classé en ${KINDS[kind].label}.`);
 }
 
 function setupDocTabs(keep) {
@@ -2158,7 +2224,7 @@ async function afterEventChange(date) {
 }
 
 // ================================================================== import
-const imp = { files: [] };
+const imp = { files: [], kinds: [] };
 
 function fileIcon(name) {
   const ext = name.split('.').pop().toLowerCase();
@@ -2175,6 +2241,7 @@ function openImport(files = [], subjectId) {
   const pre = subjectId !== undefined && subjectId !== '' ? subjectId : state.current?.subject_id ?? store.get('lastSubject', '');
   fillImportSubjects(pre);
   imp.files = [];
+  imp.kinds = [];
   addImportFiles(files);
   $('#imp-status').textContent = '';
   const dlg = $('#dlg-import');
@@ -2183,16 +2250,23 @@ function openImport(files = [], subjectId) {
 
 function addImportFiles(files) {
   for (const f of files) {
-    if (!imp.files.some((x) => x.name === f.name && x.size === f.size)) imp.files.push(f);
+    if (!imp.files.some((x) => x.name === f.name && x.size === f.size)) {
+      imp.files.push(f);
+      imp.kinds.push(guessKind(f.name)); // CM / TD / TP deviné d'après le nom, modifiable dans la liste
+    }
   }
   renderImportList();
 }
 
 function renderImportList() {
+  const kindSelect = (i) =>
+    `<select class="select small" data-kind="${i}" title="Type de document">${CATEGORIES.map(
+      (c) => `<option value="${c.kind}" ${imp.kinds[i] === c.kind ? 'selected' : ''}>${c.short}</option>`,
+    ).join('')}</select>`;
   $('#imp-list').innerHTML = imp.files
     .map(
       (f, i) =>
-        `<li><span>${fileIcon(f.name)}</span><span class="n">${esc(f.name)} <span class="muted">(${fmtSize(f.size)})</span></span><button type="button" class="icon-btn" data-rm="${i}" title="Retirer">✕</button></li>`,
+        `<li><span>${fileIcon(f.name)}</span><span class="n">${esc(f.name)} <span class="muted">(${fmtSize(f.size)})</span></span>${kindSelect(i)}<button type="button" class="icon-btn" data-rm="${i}" title="Retirer">✕</button></li>`,
     )
     .join('');
   $('#imp-go').disabled = !imp.files.length;
@@ -2203,18 +2277,23 @@ async function doImport() {
   const sid = $('#imp-subject').value;
   store.set('lastSubject', sid);
   const fd = new FormData();
-  imp.files.forEach((f) => fd.append('files', f));
+  imp.files.forEach((f, i) => {
+    fd.append('files', f);
+    fd.append('kinds', imp.kinds[i] || guessKind(f.name));
+  });
   if (sid) fd.append('subject_id', sid);
   $('#imp-go').disabled = true;
   $('#imp-status').innerHTML = '<span class="spinner" style="display:inline-block;vertical-align:middle"></span> Conversion en cours…';
   try {
     const results = await api('/api/import', { method: 'POST', body: fd });
     imp.files = [];
+    imp.kinds = [];
     $('#imp-list').innerHTML = results
       .map((r) => {
         if (r.error) return `<li class="err"><span>✖</span><span class="n">${esc(r.filename)}<small>${esc(r.error)}</small></span></li>`;
         const warn = (r.warnings || []).map((w) => `<small>⚠ ${esc(w)}</small>`).join('');
-        return `<li><span>✔</span><span class="n"><a href="#doc/${r.document.id}" data-open>${esc(r.document.title)}</a>${warn}</span></li>`;
+        const cat = CATEGORIES.find((c) => c.kind === r.document.kind);
+        return `<li><span>✔</span><span class="n">${cat ? `<b>${cat.short}</b> · ` : ''}<a href="#doc/${r.document.id}" data-open>${esc(r.document.title)}</a>${warn}</span></li>`;
       })
       .join('');
     $$('#imp-list [data-open]').forEach((a) => a.addEventListener('click', () => $('#dlg-import').close()));
@@ -2441,6 +2520,7 @@ function bindEvents() {
     }
   });
   $('#doc-subject').addEventListener('change', changeSubject);
+  $('#doc-category').addEventListener('change', changeKind);
   $$('#mode-switch button').forEach((b) => (b.onclick = () => applyMode(b.dataset.mode)));
   $('#btn-source').onclick = () => {
     if (!state.current) return;
@@ -2615,7 +2695,12 @@ function bindEvents() {
     const b = e.target.closest('[data-rm]');
     if (!b) return;
     imp.files.splice(+b.dataset.rm, 1);
+    imp.kinds.splice(+b.dataset.rm, 1);
     renderImportList();
+  });
+  $('#imp-list').addEventListener('change', (e) => {
+    const sel = e.target.closest('[data-kind]');
+    if (sel) imp.kinds[+sel.dataset.kind] = sel.value;
   });
   $('#imp-go').onclick = doImport;
   $('#imp-subject').addEventListener('change', async (e) => {

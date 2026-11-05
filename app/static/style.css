@@ -166,6 +166,11 @@ textarea { resize: vertical; }
   display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border-radius: 999px;
   background: var(--accent-soft); color: var(--accent); font-size: 12px; font-weight: 600; white-space: nowrap;
 }
+.badge-select {
+  background: var(--accent-soft) !important; color: var(--accent); border-color: transparent !important;
+  border-radius: 999px !important; font-weight: 600; font-size: 12px !important; padding: 3px 6px 3px 9px !important;
+  cursor: pointer;
+}
 .chip {
   display: inline-block; padding: 2px 8px; border-radius: 999px; background: var(--panel-2);
   font-size: 11.5px; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -262,6 +267,12 @@ textarea { resize: vertical; }
 .subject-head:hover .exam-chip { visibility: hidden; }
 .subject-head.drop-target { background: var(--accent-soft); outline: 2px dashed var(--accent); }
 .subject-docs { padding-left: 10px; }
+.cat-label {
+  display: flex; align-items: center; gap: 6px; padding: 5px 8px 1px; font-size: 10.5px; font-weight: 700;
+  letter-spacing: .06em; text-transform: uppercase; color: var(--muted);
+}
+.cat-label .n { font-weight: 500; letter-spacing: 0; }
+.cat-label::after { content: ""; flex: 1; height: 1px; background: var(--border); }
 .doc-item {
   display: flex; align-items: center; gap: 7px; width: 100%; text-align: left; border: none; background: none;
   padding: 5px 8px; border-radius: 7px; cursor: pointer; color: var(--text); font-size: 13.5px;

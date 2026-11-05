@@ -72,8 +72,17 @@ def normalize_math(text: str) -> str:
             out.append(line)
             in_math = True
         else:
+            # Une liste collée à la ligne de texte précédente n'est pas reconnue par Python-Markdown :
+            # on insère la ligne vide qu'il attend (sauf à l'intérieur d'une liste existante).
+            if _LIST_ITEM.match(line) and out:
+                prev = out[-1]
+                if prev.strip() and not _LIST_ITEM.match(prev) and not prev[:1].isspace():
+                    out.append("")
             out.append(_ONE_LINE_DISPLAY.sub(r"$\1$", line))
     return "\n".join(out)
+
+
+_LIST_ITEM = re.compile(r"^\s*(?:[-*+]|\d{1,3}[.)])\s+\S")
 
 
 def to_html(text: str) -> str:

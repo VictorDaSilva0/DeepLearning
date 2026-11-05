@@ -19,6 +19,20 @@ class ImportResult:
     warnings: list[str] = field(default_factory=list)
 
 
+_TD_RE = re.compile(r"(?:^|[^a-z])td(?![a-z])|travaux[\s_-]*dirig", re.IGNORECASE)
+_TP_RE = re.compile(r"(?:^|[^a-z])tp(?![a-z])|travaux[\s_-]*pratiq", re.IGNORECASE)
+
+
+def guess_kind(filename: str) -> str:
+    """Devine le type d'après le nom du fichier : « TD2_routage.pdf » → td, « TP-Docker.pptx » → tp, sinon cours (CM)."""
+    stem = Path(filename).stem
+    if _TD_RE.search(stem):
+        return "td"
+    if _TP_RE.search(stem):
+        return "tp"
+    return "cours"
+
+
 def title_from_filename(name: str) -> str:
     stem = Path(name).stem
     stem = re.sub(r"[_]+", " ", stem)

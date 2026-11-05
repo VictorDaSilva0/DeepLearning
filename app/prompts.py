@@ -166,6 +166,20 @@ TASKS: dict[str, dict] = {
             "réponse modèle concise dans un bloc de citation (> ), avec les mots-clés attendus en **gras**."
         ),
     },
+    "corrige": {
+        "label": "Corrigé détaillé",
+        "kind": "corrige",
+        "reserve": 6000,
+        "prompt": (
+            "Ce document est un sujet d'exercices (TD ou TP). Rédige le corrigé détaillé de chaque exercice et de "
+            "chaque question, dans l'ordre du sujet, avec une section ## Exercice N par exercice. Pour chaque "
+            "question : rappelle en une ligne ce qui est demandé, puis donne la démarche étape par étape "
+            "(justifications, calculs, schémas décrits, commandes ou code si nécessaire) et le résultat final en "
+            "**gras**. Si une question dépend d'une information absente du sujet (fichier, figure, valeur), "
+            "dis-le et pose une hypothèse raisonnable. Si tu n'es pas sûr d'un résultat, signale-le clairement. "
+            "Termine par une section ## Points de méthode à retenir."
+        ),
+    },
     "custom": {
         "label": "Demande libre",
         "kind": "note",
@@ -199,7 +213,16 @@ OCR_PROMPT = (
 )
 
 
-def task_user_prompt(task: str, title: str, source: str, count: int, difficulty: str, instructions: str) -> str:
+DOC_LABELS = {
+    "cours": "le cours magistral (CM)",
+    "td": "le sujet de TD (travaux dirigés)",
+    "tp": "le sujet de TP (travaux pratiques)",
+}
+
+
+def task_user_prompt(
+    task: str, title: str, source: str, count: int, difficulty: str, instructions: str, doc_kind: str = "cours"
+) -> str:
     spec = TASKS[task]
     body = spec["prompt"].format(
         count=count,
@@ -209,7 +232,8 @@ def task_user_prompt(task: str, title: str, source: str, count: int, difficulty:
     extra = ""
     if instructions and task != "custom":
         extra = f"\n\nConsignes supplémentaires de l'étudiant : {instructions}"
-    return f"Voici le cours « {title} » :\n\n<cours>\n{source}\n</cours>\n\n{body}{extra}"
+    label = DOC_LABELS.get(doc_kind, "le document")
+    return f"Voici {label} « {title} » :\n\n<cours>\n{source}\n</cours>\n\n{body}{extra}"
 
 
 def condense_prompt(part: int, total: int, words: int, chunk: str) -> str:
