@@ -1,4 +1,4 @@
-"""Conversion des cours importés (PDF, DOCX, PPTX, TXT, MD) en Markdown."""
+"""Conversion des cours importés (PDF, DOCX, PPTX, anciens DOC / PPT, TXT, MD) en Markdown."""
 
 from __future__ import annotations
 
@@ -6,6 +6,8 @@ import re
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from . import office
 
 SCAN_MARKER_RE = re.compile(r"^> 📷 \*\*Page (\d+)\*\*.*$", re.MULTILINE)
 
@@ -45,6 +47,17 @@ def title_from_filename(name: str) -> str:
 
 def import_file(path: Path, original_name: str) -> ImportResult:
     ext = Path(original_name).suffix.lower()
+    if ext in office.LEGACY:
+        # Ancien .doc / .ppt : Word / PowerPoint le réenregistrent en .docx / .pptx, lu ensuite normalement.
+        try:
+            modern = office.to_modern(path)
+        except office.ConversionError as exc:
+            raise ValueError(f"les anciens fichiers {ext} sont convertis avec Microsoft Office — {exc}") from exc
+        try:
+            return import_file(modern, Path(original_name).stem + modern.suffix)
+        finally:
+            modern.unlink(missing_ok=True)
+
     title = title_from_filename(original_name)
     if ext == ".pdf":
         body, scanned, warnings = pdf_to_markdown(path)

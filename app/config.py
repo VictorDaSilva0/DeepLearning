@@ -25,7 +25,7 @@ DEFAULT_SETTINGS: dict[str, object] = {
     "current_semester": "",  # ex. "S7" : semestre déplié en premier dans la bibliothèque
 }
 
-ALLOWED_IMPORT_EXT = {".pdf", ".docx", ".pptx", ".txt", ".md", ".markdown"}
+ALLOWED_IMPORT_EXT = {".pdf", ".docx", ".pptx", ".doc", ".ppt", ".txt", ".md", ".markdown"}
 MAX_UPLOAD_MB = 200
 
 

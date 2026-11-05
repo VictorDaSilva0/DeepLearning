@@ -354,7 +354,7 @@ async def import_files(
             path.unlink(missing_ok=True)
             results.append({"filename": name, "error": f"Lecture impossible : {exc}"})
             continue
-        keep_source = ext in {".pdf", ".docx", ".pptx"}
+        keep_source = ext in {".pdf", ".docx", ".pptx", ".doc", ".ppt"}
         if not keep_source:
             path.unlink(missing_ok=True)
         kind = kinds[index] if index < len(kinds) and kinds[index] in SOURCE_KINDS else importers.guess_kind(name)

@@ -976,7 +976,7 @@ async function loadOriginal() {
   loading.classList.remove('error');
   loading.querySelector('.spinner').hidden = false;
   $('#orig-msg').textContent =
-    ext === 'pdf' ? 'Chargement du PDF…' : `Conversion du fichier ${ext.toUpperCase()} avec ${ext === 'pptx' ? 'PowerPoint' : 'Word'}… (quelques secondes la première fois)`;
+    ext === 'pdf' ? 'Chargement du PDF…' : `Conversion du fichier ${ext.toUpperCase()} avec ${ext.startsWith('ppt') ? 'PowerPoint' : 'Word'}… (quelques secondes la première fois)`;
   try {
     const res = await fetch(url);
     if (!res.ok) throw new Error(await errorMessage(res));
@@ -2339,7 +2339,7 @@ const imp = { files: [], kinds: [] };
 
 function fileIcon(name) {
   const ext = name.split('.').pop().toLowerCase();
-  return { pdf: '📕', docx: '📘', pptx: '📙', txt: '📄', md: '📝', markdown: '📝' }[ext] || '📄';
+  return { pdf: '📕', docx: '📘', doc: '📘', pptx: '📙', ppt: '📙', txt: '📄', md: '📝', markdown: '📝' }[ext] || '📄';
 }
 
 function fillImportSubjects(selected) {
@@ -2394,7 +2394,10 @@ async function doImport() {
   });
   if (sid) fd.append('subject_id', sid);
   $('#imp-go').disabled = true;
-  $('#imp-status').innerHTML = '<span class="spinner" style="display:inline-block;vertical-align:middle"></span> Conversion en cours…';
+  const legacy = imp.files.some((f) => /\.(doc|ppt)$/i.test(f.name));
+  $('#imp-status').innerHTML = `<span class="spinner" style="display:inline-block;vertical-align:middle"></span> Conversion en cours…${
+    legacy ? ' (les .doc / .ppt passent par Word / PowerPoint : quelques secondes de plus)' : ''
+  }`;
   try {
     const results = await api('/api/import', { method: 'POST', body: fd });
     imp.files = [];

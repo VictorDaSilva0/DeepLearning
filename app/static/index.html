@@ -5,12 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>DeepLearning — atelier de révision</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧠</text></svg>">
-  <link rel="stylesheet" href="/static/style.css?v=6">
+  <link rel="stylesheet" href="/static/style.css?v=7">
   <!-- KaTeX (formules) : optionnel, chargé depuis un CDN quand Internet est disponible. -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
-  <script defer src="/static/app.js?v=6"></script>
+  <script defer src="/static/app.js?v=7"></script>
 </head>
 <body>
 <div id="app" class="layout">
@@ -70,7 +70,7 @@
         <div id="home-drop" class="dropzone big">
           <div class="dz-icon">📥</div>
           <div><b>Glisse tes cours ici</b> ou <button class="link" id="home-browse">parcours tes fichiers</button></div>
-          <small>PDF · Word (.docx) · PowerPoint (.pptx) · Texte · Markdown</small>
+          <small>PDF · Word (.docx, .doc) · PowerPoint (.pptx, .ppt) · Texte · Markdown</small>
         </div>
 
         <div class="stat-grid" id="home-stats"></div>
@@ -355,7 +355,7 @@
 </div>
 
 <!-- ============================================================ Fenêtres -->
-<input type="file" id="file-input" multiple accept=".pdf,.docx,.pptx,.txt,.md,.markdown" hidden>
+<input type="file" id="file-input" multiple accept=".pdf,.docx,.doc,.pptx,.ppt,.txt,.md,.markdown" hidden>
 <div id="drop-overlay" class="drop-overlay" hidden><div>📥 Dépose tes cours pour les importer</div></div>
 
 <dialog id="dlg-import" class="dialog">
@@ -366,7 +366,7 @@
     </label>
     <div id="imp-drop" class="dropzone">
       <div>Glisse des fichiers ici ou <button type="button" class="link" id="imp-browse">parcours</button></div>
-      <small>PDF · .docx · .pptx · .txt · .md — les anciens .doc / .ppt doivent d'abord être réenregistrés en .docx / .pptx</small>
+      <small>PDF · .docx · .doc · .pptx · .ppt · .txt · .md — les anciens .doc / .ppt sont convertis avec Microsoft Office</small>
     </div>
     <ul id="imp-list" class="imp-list"></ul>
     <footer>

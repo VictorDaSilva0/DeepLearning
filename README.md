@@ -2,7 +2,7 @@
 
 Un outil qui tourne entièrement sur ton PC pour :
 
-- **importer tes cours** (PDF, Word `.docx`, PowerPoint `.pptx`, `.txt`, `.md`), convertis en texte Markdown modifiable ;
+- **importer tes cours** (PDF, Word `.docx` / `.doc`, PowerPoint `.pptx` / `.ppt`, `.txt`, `.md`), convertis en texte Markdown modifiable ;
 - **les retravailler** dans un éditeur Markdown (aperçu en direct, barre d'outils, rechercher/remplacer, formules LaTeX, export) ;
 - **demander à une IA locale (Ollama)** de générer fiches de révision, résumés, exercices corrigés, QCM interactifs, flashcards, glossaires, plans, questions d'examen… ou de **discuter avec ton cours**.
 
@@ -31,7 +31,7 @@ Options : `python run.py --no-browser`, `--no-reload`. Variables d'environnement
 | Zone | Ce qu'on peut faire |
 | --- | --- |
 | **Bibliothèque** | Matières (modules) rangées par **semestre** (le semestre en cours est déplié, réglable dans ⚙), cours et documents générés rangés sous leur cours d'origine, recherche plein texte, glisser-déposer de fichiers (sur une matière pour l'y ranger). |
-| **Import** | PDF (titres d'après la taille et le gras, paragraphes reconstitués, puces Word, commandes en police à chasse fixe → blocs de code, tableaux, repères pour les captures d'écran, en-têtes/pieds de page supprimés), DOCX (titres, listes, gras/italique, liens, tableaux), PPTX (une section par diapositive, titres, encadrés de terminal → blocs de code, commandes en ligne, tableaux, notes de l'orateur). |
+| **Import** | PDF (titres d'après la taille et le gras, paragraphes reconstitués, puces Word, commandes en police à chasse fixe → blocs de code, tableaux, repères pour les captures d'écran, en-têtes/pieds de page supprimés), DOCX (titres, listes, gras/italique, liens, tableaux), PPTX (une section par diapositive, titres, encadrés de terminal → blocs de code, commandes en ligne, tableaux, notes de l'orateur). Les anciens **`.doc` / `.ppt`** sont d'abord réenregistrés en `.docx` / `.pptx` par **Microsoft Office** (macros désactivées), puis importés de la même façon. |
 | **CM / TD / TP / CR** | Chaque document de cours est classé en cours magistral, TD, TP ou compte-rendu — deviné d'après le nom du fichier (« TD2_routage.pdf », « TP-Docker.pptx », « Compte-rendu… »), modifiable à l'import et dans l'en-tête du document. Un compte-rendu est rattaché à son sujet de TD / TP (automatiquement quand c'est possible) et apparaît sous lui dans la bibliothèque. |
 | **Traduction** | Les cours en anglais sont repérés automatiquement ; un clic les traduit en français, section par section, avec les termes techniques sous la forme « noyau (kernel) ». Commandes et blocs de code restent intacts, et l'original anglais est conservé (« revenir à l'anglais »). |
 | **Cours d'origine** | Onglet *Original* : le fichier importé s'affiche tel quel dans l'outil. Les PDF directement ; les Word / PowerPoint sont convertis en PDF par **Microsoft Office** (une fois, puis mis en cache). |
@@ -53,12 +53,12 @@ Le modèle a une mémoire limitée (réglable dans ⚙ : 8k → 128k tokens). Si
 ```
 app/
   main.py        API FastAPI (documents, import, génération en streaming, flashcards…)
-  importers.py   PDF / DOCX / PPTX / TXT → Markdown
+  importers.py   PDF / DOCX / PPTX / DOC / PPT / TXT → Markdown
   llm.py         client Ollama, budget de contexte, condensation, recherche de passages
   prompts.py     consignes envoyées au modèle
   render.py      Markdown → HTML assaini (aperçu, export)
   srs.py         planification des flashcards
-  office.py      conversion Word / PowerPoint → PDF (aperçu de l'original, via Office)
+  office.py      conversions via Office : Word / PowerPoint → PDF (aperçu), .doc / .ppt → .docx / .pptx
   db.py          SQLite (data/deeplearning.db)
   static/        interface web (HTML/CSS/JS sans build)
 run.py           lance le serveur et ouvre le navigateur
