@@ -270,6 +270,54 @@ async def fit_source(text: str, settings: dict[str, Any], reserve_tokens: int) -
     yield {"type": "source", "text": current, "condensed": True}
 
 
+# =========================================================================== langue & découpage
+
+_EN_WORDS = set("the and of to is are in that for with on this be can from by an as or it which you your not use".split())
+_FR_WORDS = set("le la les des et est une un du dans pour que qui sur pas avec au aux ce sont vous nous par".split())
+
+
+def detect_language(text: str) -> str | None:
+    """« en » / « fr » d'après les mots les plus courants (hors blocs de code), sinon None."""
+    sample = re.sub(r"```.*?```|`[^`]*`", " ", text[:20000], flags=re.S).lower()
+    words = re.findall(r"[a-zàâçéèêëîïôûùüÿœ']+", sample)
+    en = sum(1 for w in words if w in _EN_WORDS)
+    fr = sum(1 for w in words if w in _FR_WORDS)
+    if en >= 15 and en > 2 * fr:
+        return "en"
+    if fr >= 15 and fr > 2 * en:
+        return "fr"
+    return None
+
+
+def split_markdown_sections(text: str, max_chars: int = 3500) -> list[str]:
+    """Découpe un Markdown en morceaux d'au plus ~max_chars, aux titres « ## » / « ### »,
+    sans jamais couper un bloc de code."""
+    sections: list[str] = []
+    current: list[str] = []
+    in_code = False
+    for line in text.split("\n"):
+        if line.strip().startswith("```"):
+            in_code = not in_code
+        if not in_code and re.match(r"#{1,3} ", line) and current:
+            sections.append("\n".join(current))
+            current = []
+        current.append(line)
+    if current:
+        sections.append("\n".join(current))
+
+    chunks: list[str] = []
+    buf = ""
+    for sec in sections:
+        if buf and len(buf) + len(sec) + 2 > max_chars:
+            chunks.append(buf)
+            buf = sec
+        else:
+            buf = f"{buf}\n\n{sec}" if buf else sec
+    if buf:
+        chunks.append(buf)
+    return [c.strip("\n") for c in chunks if c.strip()]
+
+
 # =========================================================================== recherche de passages (chat)
 
 _STOPWORDS = set(

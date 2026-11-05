@@ -203,6 +203,8 @@ const KINDS = {
   td: { icon: '📗', label: 'TD' },
   tp: { icon: '🔧', label: 'TP' },
   corrige: { icon: '🔑', label: 'Corrigé' },
+  rendu: { icon: '📑', label: 'Compte-rendu' },
+  relecture: { icon: '🧐', label: 'Relecture' },
   note: { icon: '📝', label: 'Note' },
   fiche: { icon: '📋', label: 'Fiche' },
   resume: { icon: '🧾', label: 'Résumé' },
@@ -226,6 +228,7 @@ const TASKS = [
   { id: 'glossaire', icon: '📖', label: 'Glossaire', desc: 'Tous les termes techniques' },
   { id: 'plan', icon: '🗺️', label: 'Plan / carte mentale', desc: "L'organisation des idées" },
   { id: 'corrige', icon: '🔑', label: 'Corrigé détaillé', desc: 'Résout les exercices du TD / TP' },
+  { id: 'relecture', icon: '🧐', label: 'Relire mon compte-rendu', desc: 'Couverture du sujet, erreurs, conseils', only: ['rendu'] },
   { id: 'custom', icon: '💬', label: 'Demande libre', desc: 'Ta propre consigne' },
 ];
 
@@ -234,12 +237,14 @@ const CATEGORIES = [
   { kind: 'cours', short: 'CM', label: 'Cours magistraux' },
   { kind: 'td', short: 'TD', label: 'Travaux dirigés' },
   { kind: 'tp', short: 'TP', label: 'Travaux pratiques' },
+  { kind: 'rendu', short: 'CR', label: 'Comptes-rendus' },
 ];
 const SOURCE_KINDS = CATEGORIES.map((c) => c.kind);
 
-/** Même détection que le serveur : « TD2_routage.pdf » → td, « TP-Docker.pptx » → tp, sinon CM. */
+/** Même détection que le serveur : « TD2_routage.pdf » → td, « TP-Docker.pptx » → tp, « Compte-rendu… » → CR, sinon CM. */
 function guessKind(filename) {
   const stem = filename.replace(/\.[^.]+$/, '');
+  if (/compte[\s_-]*rendu|(?:^|[^a-z])(?:cr|rapport)(?![a-z])/i.test(stem)) return 'rendu';
   if (/(?:^|[^a-z])td(?![a-z])|travaux[\s_-]*dirig/i.test(stem)) return 'td';
   if (/(?:^|[^a-z])tp(?![a-z])|travaux[\s_-]*pratiq/i.test(stem)) return 'tp';
   return 'cours';
@@ -752,6 +757,7 @@ async function openDoc(id, { force = false } = {}) {
   setSaveState('');
   updateStats();
   updateScanBanner();
+  updateLangUI();
   closeFind();
   setupDocTabs(sameDoc ? state.docTab : null);
   highlightActive();
@@ -781,6 +787,98 @@ function updateKindUI() {
   $('#doc-kind').hidden = editable;
   $('#doc-category').hidden = !editable;
   if (editable) $('#doc-category').value = doc.kind;
+  // Compte-rendu : choix du sujet de TD / TP auquel il répond.
+  const parentSel = $('#doc-parent');
+  parentSel.hidden = doc.kind !== 'rendu';
+  if (doc.kind === 'rendu') {
+    const subjects = state.docs.filter((d) => ['td', 'tp'].includes(d.kind) && d.subject_id === doc.subject_id && d.id !== doc.id);
+    parentSel.innerHTML =
+      '<option value="">📎 Sujet : aucun</option>' +
+      subjects.map((d) => `<option value="${d.id}">📎 ${esc(KINDS[d.kind].label)} : ${esc(d.title)}</option>`).join('');
+    parentSel.value = subjects.some((d) => d.id === doc.parent_id) ? String(doc.parent_id) : '';
+  }
+}
+
+async function changeParent() {
+  const doc = state.current;
+  if (!doc) return;
+  const v = $('#doc-parent').value;
+  const parent_id = v ? +v : null;
+  try {
+    await api(`/api/documents/${doc.id}`, { method: 'PATCH', body: { parent_id } });
+  } catch (e) {
+    toast(e.message, { error: true });
+    return;
+  }
+  doc.parent_id = parent_id;
+  await loadLibrary();
+  toast(parent_id ? 'Compte-rendu rattaché à son sujet.' : 'Compte-rendu détaché du sujet.');
+}
+
+// ------------------------------------------------------------------ traduction
+function updateLangUI() {
+  const doc = state.current;
+  const translated = Boolean(doc?.data && doc.data.translation);
+  $('#lang-banner').hidden = !doc || translated || doc.lang !== 'en' || ['qcm', 'flashcards'].includes(doc.kind);
+  $('#doc-translated').hidden = !translated;
+  $('#lang-status').textContent = "Les termes techniques garderont leur nom anglais entre parenthèses, ex. « noyau (kernel) ».";
+}
+
+async function runTranslate() {
+  const doc = state.current;
+  if (!doc || state.controllers.translate) return;
+  await flushSave();
+  const ctrl = new AbortController();
+  state.controllers.translate = ctrl;
+  $('#btn-translate').disabled = true;
+  editor.readOnly = true;
+  let chars = 0;
+  let base = 'Traduction en cours…';
+  let done = null;
+  try {
+    await streamNDJSON(
+      `/api/documents/${doc.id}/translate`,
+      {},
+      (ev) => {
+        if (ev.type === 'status') {
+          base = ev.message;
+          chars = 0;
+        } else if (ev.type === 'token') {
+          chars += ev.text.length;
+        } else if (ev.type === 'done') {
+          done = ev;
+        }
+        $('#lang-status').textContent = chars ? `${base} (${chars.toLocaleString('fr-FR')} caractères)` : base;
+      },
+      ctrl.signal,
+    );
+    if (!done) throw new Error("La traduction s'est interrompue.");
+    toast('Cours traduit en français ✔');
+    await loadLibrary();
+    if (state.current?.id === doc.id) await openDoc(doc.id, { force: true });
+  } catch (e) {
+    if (e.name !== 'AbortError') toast(e.message, { error: true });
+    updateLangUI();
+  } finally {
+    state.controllers.translate = null;
+    $('#btn-translate').disabled = false;
+    if (state.docTab !== 'text') editor.readOnly = false;
+  }
+}
+
+async function untranslate() {
+  const doc = state.current;
+  if (!doc) return;
+  if (!confirm('Revenir à la version anglaise d\'origine ?\nLes modifications faites sur la traduction seront perdues.')) return;
+  try {
+    await api(`/api/documents/${doc.id}/untranslate`, { method: 'POST' });
+  } catch (e) {
+    toast(e.message, { error: true });
+    return;
+  }
+  await loadLibrary();
+  await openDoc(doc.id, { force: true });
+  toast('Version anglaise restaurée.');
 }
 
 async function changeKind() {
@@ -887,7 +985,10 @@ async function loadOriginal() {
     if (state.current?.id !== doc.id) return;
     loading.classList.add('error');
     loading.querySelector('.spinner').hidden = true;
-    $('#orig-msg').textContent = `⚠ ${e.message} — utilise « Télécharger le fichier » pour l'ouvrir.`;
+    const stale = await checkServerVersion();
+    $('#orig-msg').textContent = stale
+      ? "⚠ Le serveur tourne sur une ancienne version : double-clique sur lancer.bat pour le mettre à jour, puis recharge la page."
+      : `⚠ ${e.message} — utilise « Télécharger le fichier » pour l'ouvrir.`;
     return;
   }
   if (state.current?.id !== doc.id || state.docTab !== 'original') return;
@@ -990,6 +1091,7 @@ async function changeSubject() {
   await api(`/api/documents/${doc.id}`, { method: 'PATCH', body: { subject_id } });
   doc.subject_id = subject_id;
   await loadLibrary();
+  updateKindUI();
 }
 
 async function newNote(subjectId) {
@@ -1347,14 +1449,23 @@ function refreshAIPanel() {
   $('#ai-chat').hidden = tab !== 'chat';
   $('#ai-nodoc').hidden = tab === 'chat' || hasDoc;
   if (tab === 'chat') renderChat();
+  if (hasDoc) renderTaskGrid();
   updateSelectionUI();
 }
 
+/** Tâches proposées pour le document ouvert (la relecture n'a de sens que pour un compte-rendu). */
+const visibleTasks = () => TASKS.filter((t) => !t.only || t.only.includes(state.current?.kind));
+
 function renderTaskGrid() {
-  $('#task-grid').innerHTML = TASKS.map(
-    (t) => `<button class="task" data-task="${t.id}"><span class="t">${t.icon} ${esc(t.label)}</span><span class="d">${esc(t.desc)}</span></button>`,
-  ).join('');
-  selectTask(state.task);
+  const tasks = visibleTasks();
+  const html = tasks
+    .map((t) => `<button class="task" data-task="${t.id}"><span class="t">${t.icon} ${esc(t.label)}</span><span class="d">${esc(t.desc)}</span></button>`)
+    .join('');
+  if ($('#task-grid').innerHTML !== html) $('#task-grid').innerHTML = html;
+  // Sur un compte-rendu, on propose directement la relecture.
+  const preferred = state.current?.kind === 'rendu' && state.lastKind !== 'rendu' ? 'relecture' : state.task;
+  state.lastKind = state.current?.kind;
+  selectTask(tasks.some((t) => t.id === preferred) ? preferred : tasks.some((t) => t.id === state.task) ? state.task : tasks[0].id);
 }
 
 function selectTask(id) {
@@ -2312,7 +2423,22 @@ async function doImport() {
 }
 
 // ================================================================== réglages & état d'Ollama
+/** Le serveur tourne-t-il sur le code à jour ? (sinon : bandeau d'avertissement) */
+async function checkServerVersion() {
+  let stale = false;
+  try {
+    const res = await fetch('/api/version', { cache: 'no-store' });
+    if (res.status === 404) stale = true; // serveur antérieur à cette vérification
+    else if (res.ok) stale = Boolean((await res.json()).stale);
+  } catch {
+    /* serveur injoignable : signalé ailleurs */
+  }
+  $('#update-banner').hidden = !stale;
+  return stale;
+}
+
 async function refreshHealth() {
+  checkServerVersion();
   try {
     const h = await api('/api/health');
     state.health = h;
@@ -2453,6 +2579,7 @@ function bindEvents() {
     go('#review');
   };
   $('#btn-calendar').onclick = () => go('#calendar');
+  $('#update-reload').onclick = () => location.reload();
   $('#btn-settings').onclick = openSettings;
 
   // Matières
@@ -2521,6 +2648,9 @@ function bindEvents() {
   });
   $('#doc-subject').addEventListener('change', changeSubject);
   $('#doc-category').addEventListener('change', changeKind);
+  $('#doc-parent').addEventListener('change', changeParent);
+  $('#btn-translate').onclick = runTranslate;
+  $('#btn-untranslate').onclick = untranslate;
   $$('#mode-switch button').forEach((b) => (b.onclick = () => applyMode(b.dataset.mode)));
   $('#btn-source').onclick = () => {
     if (!state.current) return;

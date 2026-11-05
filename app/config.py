@@ -29,6 +29,16 @@ ALLOWED_IMPORT_EXT = {".pdf", ".docx", ".pptx", ".txt", ".md", ".markdown"}
 MAX_UPLOAD_MB = 200
 
 
+APP_DIR = Path(__file__).resolve().parent
+
+
+def code_fingerprint() -> str:
+    """Empreinte du code Python (date de modification la plus récente) : permet de savoir si un serveur
+    déjà lancé tourne sur une ancienne version du code."""
+    mtimes = [p.stat().st_mtime for p in APP_DIR.rglob("*.py") if "__pycache__" not in p.parts]
+    return str(int(max(mtimes, default=0)))
+
+
 def ensure_dirs() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)

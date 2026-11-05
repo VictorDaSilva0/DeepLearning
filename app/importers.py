@@ -7,7 +7,6 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
-BULLET_CHARS = "•◦▪▫●○■□►▸‣⁃–—-*✓✔➢➤→"
 SCAN_MARKER_RE = re.compile(r"^> 📷 \*\*Page (\d+)\*\*.*$", re.MULTILINE)
 
 
@@ -21,11 +20,15 @@ class ImportResult:
 
 _TD_RE = re.compile(r"(?:^|[^a-z])td(?![a-z])|travaux[\s_-]*dirig", re.IGNORECASE)
 _TP_RE = re.compile(r"(?:^|[^a-z])tp(?![a-z])|travaux[\s_-]*pratiq", re.IGNORECASE)
+_CR_RE = re.compile(r"compte[\s_-]*rendu|(?:^|[^a-z])(?:cr|rapport)(?![a-z])", re.IGNORECASE)
 
 
 def guess_kind(filename: str) -> str:
-    """Devine le type d'après le nom du fichier : « TD2_routage.pdf » → td, « TP-Docker.pptx » → tp, sinon cours (CM)."""
+    """Devine le type d'après le nom du fichier : « TD2_routage.pdf » → td, « TP-Docker.pptx » → tp,
+    « Compte-rendu TP3.pdf » → rendu, sinon cours (CM)."""
     stem = Path(filename).stem
+    if _CR_RE.search(stem):
+        return "rendu"
     if _TD_RE.search(stem):
         return "td"
     if _TP_RE.search(stem):
@@ -103,21 +106,115 @@ def rows_to_markdown_table(rows: list[list[str]]) -> str:
     return "\n".join(lines)
 
 
+# =========================================================================== mise en forme en ligne
+
+_MONO_FONTS = ("courier", "consolas", "mono", "lucida console", "monaco", "menlo", "source code", "fira code")
+_ZERO_WIDTH_RE = re.compile(r"[​‌‍⁠﻿]")
+
+
+def pieces_to_markdown(pieces: list[list]) -> str:
+    """Morceaux [texte, code, gras, italique] → Markdown en ligne (`code`, **gras**, *italique*)."""
+    merged: list[list] = []
+    for text, *fmt in pieces:
+        if merged and merged[-1][1:] == fmt:
+            merged[-1][0] += text
+        else:
+            merged.append([text, *fmt])
+    out = []
+    for text, code, bold, italic in merged:
+        if not code:
+            # Un « * » collé à un mot (ex. « wildcard* ») serait pris pour de l'italique : on l'échappe.
+            text = re.sub(r"(?<=\S)\*|\*(?=\S)", r"\\*", text)
+        core = text.strip()
+        if not core or not (code or bold or italic):
+            out.append(text)
+            continue
+        lead, trail = text[: len(text) - len(text.lstrip())], text[len(text.rstrip()) :]
+        if code:
+            tick = "``" if "`" in core else "`"
+            core = f"{tick}{core}{tick}"
+        else:
+            mark = "***" if (bold and italic) else ("**" if bold else "*")
+            core = f"{mark}{core}{mark}"
+        out.append(f"{lead}{core}{trail}")
+    return re.sub(r"\s+", " ", "".join(out)).strip()
+
+
 # =========================================================================== PDF
 
 def _normalize_line(text: str) -> str:
     return re.sub(r"\d+", "#", text.strip().lower())
 
 
-def _is_bullet(text: str) -> bool:
-    return len(text) > 1 and text[0] in BULLET_CHARS and (text[1].isspace() or text[0] in "•◦▪●○■►▸➢➤✓✔")
+def _is_mono_span(span: dict) -> bool:
+    return bool(span.get("flags", 0) & 8) or any(m in span.get("font", "").lower() for m in _MONO_FONTS)
 
 
-def _strip_bullet(text: str) -> str:
-    return text[1:].strip()
+def _is_bold_span(span: dict) -> bool:
+    font = span.get("font", "").lower()
+    return bool(span.get("flags", 0) & 16) or "bold" in font or "black" in font or "heavy" in font
+
+
+def _is_italic_span(span: dict) -> bool:
+    font = span.get("font", "").lower()
+    return bool(span.get("flags", 0) & 2) or "italic" in font or "oblique" in font
+
+
+def _bullet_marker(spans: list[dict]) -> str | None:
+    """Puce en tête de ligne : •, ●, –, puces des polices Symbol/Wingdings (), ou « o » de Word."""
+    visible = [s for s in spans if s["text"].strip()]
+    if not visible:
+        return None
+    first = visible[0]["text"].lstrip()
+    ch = first[0]
+    rest = "".join(s["text"] for s in spans).lstrip()[1:2]
+    if 0xF000 <= ord(ch) <= 0xF0FF or ch in "•◦▪▫●○■□►▸‣⁃➢➤✓✔→":
+        return ch
+    if ch in "-–—*" and (rest[:1].isspace() or len(first.strip()) == 1):
+        return ch
+    # Sous-puce « o » de Word : un « o » isolé, dans une autre police que le texte qui suit.
+    if first.strip() == "o" and len(visible) > 1 and (
+        _is_mono_span(visible[0]) or visible[0].get("font") != visible[1].get("font")
+    ):
+        return "o"
+    return None
+
+
+_HEADING_CONNECTORS = {
+    "et", "de", "du", "des", "d’un", "d'un", "d’une", "d'une", "la", "le", "les", "à", "au", "aux", "pour",
+    "en", "sur", "avec", "par", "dans", "un", "une", "of", "the", "and", "to", "for", "in", "on", "with", "a", "an",
+}
+
+
+def _heading_continues(prev: dict, line: dict) -> bool:
+    """Un titre sur deux lignes ? (« 1. Configuration de base du système et » + « du réseau »)"""
+    p, n = prev["text"].strip(), line["text"].strip()
+    words = p.rstrip(" :–-").split()
+    aligned = abs(prev["x0"] - line["x0"]) < 30
+    return bool(
+        n[:1].islower()
+        or n.startswith("(")
+        or p.count("(") > p.count(")")
+        or (words and words[-1].lower() in _HEADING_CONNECTORS)
+        or p.endswith((":", "–", "-", ","))
+        or (aligned and len(n.split()) <= 2)
+    )
+
+
+def _join_text(a: str, b: str) -> str:
+    """Recolle deux lignes d'un paragraphe (en supprimant la césure « exclusi- / vement »)."""
+    if a.endswith("-") and not a.endswith(" -") and b[:1].islower():
+        return a[:-1] + b
+    # Mise en forme coupée par le retour à la ligne : « **intelligence** » + « **artificielle** ».
+    for mark in ("**", "`"):
+        if a.endswith(mark) and b.startswith(mark) and not a.endswith(mark * 2 if mark == "`" else "***"):
+            return f"{a[: -len(mark)]} {b[len(mark):]}"
+    return f"{a} {b}" if a else b
 
 
 def pdf_to_markdown(path: Path) -> tuple[str, list[int], list[str]]:
+    """PDF → Markdown, ligne par ligne : titres (taille / gras), paragraphes (espacement vertical),
+    puces, blocs de code (police à chasse fixe), tableaux, et repères pour les images."""
     import pymupdf
 
     warnings: list[str] = []
@@ -130,116 +227,239 @@ def pdf_to_markdown(path: Path) -> tuple[str, list[int], list[str]]:
     ) | pymupdf.TEXT_DEHYPHENATE
     size_chars: Counter[float] = Counter()
     pages: list[dict] = []
+    bullet_x: list[float] = []
 
     for page in doc:
-        page_info = {
-            "items": [],
-            "chars": 0,
-            "images": len(page.get_images(full=False)) > 0,
-            "height": page.rect.height or 842,
-        }
-        # Tableaux : on les extrait à part pour garder leur structure.
+        page_area = page.rect.width * page.rect.height or 1
+        info = {"items": [], "chars": 0, "has_images": False, "height": page.rect.height or 842}
+        # Tableaux : extraits à part pour garder leur structure.
         table_boxes = []
         try:
-            tables = page.find_tables()
-            for t in tables.tables:
+            for t in page.find_tables().tables:
                 md = t.to_markdown(clean=False).strip()
                 if md and len(t.extract()) >= 2:
                     table_boxes.append(pymupdf.Rect(t.bbox))
-                    page_info["items"].append({"y": t.bbox[1], "table": md})
+                    info["items"].append({"y0": t.bbox[1], "x0": t.bbox[0], "table": md})
         except Exception:  # find_tables peut échouer sur certains PDF exotiques
             pass
+        # Images assez grandes (captures d'écran, schémas) : on laisse un repère dans le texte.
+        try:
+            for img in page.get_image_info():
+                box = pymupdf.Rect(img["bbox"])
+                info["has_images"] = True
+                if box.get_area() >= 0.04 * page_area and not any(box.intersects(tb) for tb in table_boxes):
+                    info["items"].append({"y0": box.y0, "x0": box.x0, "image": True})
+        except Exception:
+            info["has_images"] = len(page.get_images(full=False)) > 0
 
+        lines: list[dict] = []
         data = page.get_text("dict", flags=flags, sort=True)
-        for block in data.get("blocks", []):
+        for b_index, block in enumerate(data.get("blocks", [])):
             if block.get("type") != 0:
                 continue
-            bbox = pymupdf.Rect(block["bbox"])
-            if any(bbox.intersects(tb) and (bbox & tb).get_area() > 0.5 * bbox.get_area() for tb in table_boxes):
-                continue
-            lines = []
-            for line in block.get("lines", []):
-                spans = [s for s in line.get("spans", []) if s.get("text", "").strip()]
-                if not spans:
+            for raw in block.get("lines", []):
+                spans = []
+                for s in raw.get("spans", []):
+                    text = _ZERO_WIDTH_RE.sub("", s.get("text", "")).replace("\xa0", " ")
+                    if text:
+                        spans.append({**s, "text": text})
+                x0, y0, x1, y1 = raw["bbox"]
+                center = pymupdf.Point((x0 + x1) / 2, (y0 + y1) / 2)
+                if any(center in tb for tb in table_boxes):
                     continue
-                text = "".join(s["text"] for s in line["spans"]).strip()
-                size = max(round(s["size"], 1) for s in spans)
-                bold = all((s.get("flags", 0) & 16) or "bold" in s.get("font", "").lower() for s in spans)
-                for s in spans:
+                text = "".join(s["text"] for s in spans)
+                visible = [s for s in spans if s["text"].strip()]
+                line = {
+                    "spans": spans, "text": text, "block": b_index, "x0": x0, "y0": y0, "x1": x1, "y1": y1,
+                    "size": max((round(s["size"], 1) for s in visible), default=0),
+                    "bold": bool(visible) and all(_is_bold_span(s) for s in visible),
+                    "mono": bool(visible) and all(_is_mono_span(s) for s in visible),
+                    "blank": not visible, "edge": False,
+                }
+                prev = lines[-1] if lines else None
+                # Morceaux d'une même ligne visuelle (« 6 » + « Critères », puce + texte) : on recolle.
+                if (
+                    prev is not None and not prev["blank"] and not line["blank"]
+                    and abs(y0 - prev["y0"]) < 2.5 and -2 <= x0 - prev["x1"] < 40
+                ):
+                    prev["spans"] += [{"text": " ", "flags": 0, "font": "", "size": 0}] + spans
+                    prev["text"] += " " + text
+                    prev["x1"], prev["y1"] = x1, max(prev["y1"], y1)
+                    prev["size"] = max(prev["size"], line["size"])
+                    prev["bold"] = prev["bold"] and line["bold"]
+                    prev["mono"] = prev["mono"] and line["mono"]
+                    continue
+                lines.append(line)
+
+        content = [ln for ln in lines if not ln["blank"]]
+        for ln in content:
+            for s in ln["spans"]:
+                if s["text"].strip() and not _is_mono_span(s):
                     size_chars[round(s["size"], 1)] += len(s["text"])
-                page_info["chars"] += len(text)
-                lines.append({"text": text, "size": size, "bold": bold, "y": line["bbox"][1], "edge": False})
-            if lines:
-                page_info["items"].append({"y": block["bbox"][1], "lines": lines})
-        page_info["items"].sort(key=lambda it: it["y"])
-        # Lignes candidates aux en-têtes / pieds de page : 2 premières, 2 dernières, ou en marge.
-        all_lines = [ln for it in page_info["items"] for ln in it.get("lines", [])]
-        h = page_info["height"]
-        for idx, ln in enumerate(all_lines):
-            if idx < 2 or idx >= len(all_lines) - 2 or ln["y"] < 0.08 * h or ln["y"] > 0.92 * h:
+            info["chars"] += len(ln["text"].strip())
+            ln["marker"] = _bullet_marker(ln["spans"])
+            if ln["marker"]:
+                bullet_x.append(ln["x0"])
+        # Lignes candidates aux en-têtes / pieds de page : 2 premières, 2 dernières, ou dans les marges.
+        h = info["height"]
+        for idx, ln in enumerate(content):
+            if idx < 2 or idx >= len(content) - 2 or ln["y0"] < 0.08 * h or ln["y0"] > 0.92 * h:
                 ln["edge"] = len(ln["text"]) < 120
-        pages.append(page_info)
+        info["items"] += lines
+        info["items"].sort(key=lambda it: (round(it["y0"]), it["x0"]))
+        pages.append(info)
 
     n_pages = len(pages)
     body_size = size_chars.most_common(1)[0][0] if size_chars else 11.0
+    min_bullet_x = min(bullet_x) if bullet_x else 0
 
-    # Lignes répétées en haut / bas de la plupart des pages (en-têtes, pieds de page, numéros).
     repeated: set[str] = set()
     if n_pages >= 4:
         counter: Counter[str] = Counter()
         for p in pages:
-            counter.update({_normalize_line(ln["text"]) for it in p["items"] for ln in it.get("lines", []) if ln["edge"]})
+            counter.update({_normalize_line(it["text"]) for it in p["items"] if it.get("edge")})
         repeated = {k for k, v in counter.items() if v >= max(3, 0.6 * n_pages)}
 
     out: list[str] = []
     scanned: list[int] = []
+    cur: dict | None = None  # paragraphe / puce / bloc de code en cours (peut continuer sur la page suivante)
+
+    def flush() -> None:
+        nonlocal cur
+        if cur:
+            if cur["kind"] == "code":
+                body = "\n".join(cur["lines"]).replace("```", "ʼʼʼ")
+                if out and out[-1].startswith("```\n") and out[-1].endswith("\n```"):
+                    # Blocs de code consécutifs (fichier de config aéré, suite de commandes) : on les réunit.
+                    out[-1] = f"{out[-1][:-4]}\n\n{body}\n```"
+                else:
+                    out.append(f"```\n{body}\n```")
+            elif cur["kind"] == "li":
+                if cur["text"].strip():
+                    out.append(f"{'  ' * cur['level']}- {cur['text']}")
+            elif cur["text"].strip():
+                out.append(cur["text"])
+        cur = None
+
     for page_no, p in enumerate(pages, start=1):
-        if p["chars"] < 25 and p["images"]:
+        if p["chars"] < 25 and p["has_images"]:
+            flush()
             scanned.append(page_no)
             out.append(f"> 📷 **Page {page_no}** : page scannée (image), texte non extrait.")
             continue
+
+        prev_line: dict | None = None
+        last_heading: dict | None = None
+        # Une phrase coupée par le changement de page continue sur la page suivante.
+        carry = cur is not None and cur["kind"] in ("p", "li") and not cur["text"].rstrip().endswith(
+            (".", ":", "!", "?", ";", "»")
+        )
+        pending_break = not carry
+
         for it in p["items"]:
-            if "table" in it:
-                out.append(it["table"])
+            if "table" in it or "image" in it:
+                flush()
+                out.append(
+                    it["table"] if "table" in it
+                    else f"> 🖼️ *Image (capture d'écran, schéma…) — voir l'original, page {page_no}*"
+                )
+                prev_line, last_heading, pending_break = None, None, True
                 continue
-            para: list[str] = []
-            kind = "p"
+            ln = it
+            if ln["blank"]:
+                pending_break = True
+                continue
+            if ln["edge"] and _normalize_line(ln["text"]) in repeated:
+                continue
 
-            def flush() -> None:
-                nonlocal para, kind
-                if para:
-                    text = " ".join(para).strip()
-                    text = re.sub(r"\s+", " ", text)
-                    out.append(f"- {text}" if kind == "li" else text)
-                para, kind = [], "p"
+            size = ln["size"] or body_size
+            gap = ln["y0"] - prev_line["y1"] if prev_line else 999
+            had_blank = pending_break
+            if prev_line is None and carry and not had_blank:
+                brk = False  # suite du paragraphe de la page précédente
+            else:
+                brk = (
+                    had_blank or prev_line is None or gap > 0.9 * size
+                    or (ln["block"] != prev_line["block"] and gap > 0.4 * size)
+                )
+            carry = False
+            pending_break = False
+            text = re.sub(r"\s+", " ", ln["text"]).strip()
+            ratio = size / body_size if body_size else 1
+            short = len(text) < 120 and not text.endswith((".", ",", ";"))
 
-            for ln in it["lines"]:
-                text = ln["text"]
-                if ln["edge"] and _normalize_line(text) in repeated:
-                    continue
-                ratio = ln["size"] / body_size if body_size else 1
-                short = len(text) < 120 and not text.endswith((".", ",", ";"))
-                if ratio >= 1.6 and short:
-                    flush()
-                    out.append(f"## {text}")
-                elif ratio >= 1.2 and short:
-                    flush()
-                    out.append(f"### {text}")
-                elif ln["bold"] and short and len(text) < 80 and len(it["lines"]) <= 2 and not _is_bullet(text):
-                    flush()
-                    out.append(f"#### {text}")
-                elif _is_bullet(text):
-                    flush()
-                    kind = "li"
-                    para = [_strip_bullet(text)]
+            level = 0
+            if not ln["marker"] and not ln["mono"] and short:
+                if ratio >= 1.6:
+                    level = 2
+                elif ratio >= 1.15:
+                    level = 3
+                elif ln["bold"] and len(text) < 80 and brk:
+                    level = 4
+            if level:
+                flush()
+                if (
+                    last_heading and last_heading["level"] == level and last_heading["index"] == len(out) - 1
+                    and ln["y0"] - last_heading["line"]["y1"] < 0.6 * size and _heading_continues(last_heading["line"], ln)
+                ):
+                    out[-1] += " " + text
+                    last_heading["line"] = {**ln, "text": out[-1].lstrip("# "), "x0": last_heading["line"]["x0"]}
                 else:
-                    para.append(text)
-            flush()
+                    out.append(f"{'#' * level} {text}")
+                    last_heading = {"level": level, "index": len(out) - 1, "line": ln}
+                prev_line = ln
+                continue
+            last_heading = None
 
-    md = "\n\n".join(out)
+            if ln["mono"] and not ln["marker"]:
+                continues = cur is not None and cur["kind"] == "code" and not had_blank and gap < 0.9 * size
+                if not continues:
+                    flush()
+                    cur = {"kind": "code", "lines": [], "x0": ln["x0"]}
+                indent = max(0, round((ln["x0"] - cur["x0"]) / (0.6 * size))) if size else 0
+                cur["lines"].append(" " * indent + ln["text"].rstrip())
+                prev_line = ln
+                continue
+
+            spans = ln["spans"]
+            if ln["marker"]:
+                # On retire la puce du premier morceau de texte visible.
+                spans = [dict(s) for s in spans]
+                for s in spans:
+                    if s["text"].strip():
+                        s["text"] = s["text"].lstrip()[1:]
+                        break
+            rich = pieces_to_markdown(
+                [[s["text"], _is_mono_span(s), _is_bold_span(s), _is_italic_span(s)] for s in spans]
+            )
+            if ln["marker"]:
+                flush()
+                offset = ln["x0"] - min_bullet_x
+                cur = {"kind": "li", "text": rich, "level": 0 if offset <= 10 else (1 if offset <= 45 else 2)}
+            elif cur and cur["kind"] in ("p", "li") and not brk:
+                cur["text"] = _join_text(cur["text"], rich)
+            else:
+                flush()
+                cur = {"kind": "p", "text": rich}
+            prev_line = ln
+        if cur and cur["kind"] == "code":
+            flush()
+    flush()
+
+    # Titre réduit à un numéro (« 1 ») suivi du vrai titre : on les fusionne.
+    merged: list[str] = []
+    for block in out:
+        m = re.fullmatch(r"(#{2,4}) (\d{1,2})\.?", merged[-1]) if merged else None
+        h = re.match(r"(#{2,4}) (.+)", block)
+        if m and h:
+            merged[-1] = f"{h.group(1)} {m.group(2)}. {h.group(2)}"
+        else:
+            merged.append(block)
+
+    md = "\n\n".join(merged)
     # Les éléments de liste consécutifs ne doivent pas être séparés par des lignes vides.
-    md = re.sub(r"(?m)^(- .*)\n\n(?=- )", r"\1\n", md)
-    md = re.sub(r"(?m)^(- .*)\n\n(?=- )", r"\1\n", md)
+    md = re.sub(r"(?m)^(\s*- .*)\n\n(?=\s*- )", r"\1\n", md)
+    md = re.sub(r"(?m)^(\s*- .*)\n\n(?=\s*- )", r"\1\n", md)
     if scanned:
         warnings.append(
             f"{len(scanned)} page(s) semblent scannées (sans texte). "
@@ -378,7 +598,6 @@ def _iter_shapes(shapes):
             yield shape
 
 
-_MONO_FONTS = ("courier", "consolas", "mono", "lucida console", "monaco", "menlo", "source code", "fira code")
 _PROMPT_RE = re.compile(r"^\s*\S+@[\w.-]+:\S*\s?[$#]\s")
 
 
@@ -405,29 +624,8 @@ def _rich_para_text(para) -> str:
             fmt, text = [False, False, False], "".join(child.itertext())
         else:
             continue
-        if pieces and pieces[-1][1:] == fmt:
-            pieces[-1][0] += text
-        else:
-            pieces.append([text, *fmt])
-
-    out = []
-    for text, code, bold, italic in pieces:
-        if not code:
-            # Un « * » collé à un mot (ex. « wildcard* ») serait pris pour de l'italique : on l'échappe.
-            text = re.sub(r"(?<=\S)\*|\*(?=\S)", r"\\*", text)
-        core = text.strip()
-        if not core or not (code or bold or italic):
-            out.append(text)
-            continue
-        lead, trail = text[: len(text) - len(text.lstrip())], text[len(text.rstrip()) :]
-        if code:
-            tick = "``" if "`" in core else "`"
-            core = f"{tick}{core}{tick}"
-        else:
-            mark = "***" if (bold and italic) else ("**" if bold else "*")
-            core = f"{mark}{core}{mark}"
-        out.append(f"{lead}{core}{trail}")
-    return re.sub(r"\s+", " ", "".join(out)).strip()
+        pieces.append([text, *fmt])
+    return pieces_to_markdown(pieces)
 
 
 def _find_title(slide):

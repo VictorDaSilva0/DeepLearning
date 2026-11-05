@@ -22,20 +22,23 @@ python -m venv .venv
 .venv\Scripts\python run.py
 ```
 
-Options : `python run.py --no-browser`. Variables d'environnement : `DEEPLEARNING_PORT` (défaut 8765), `DEEPLEARNING_DATA` (dossier des données), `OLLAMA_URL` (défaut `http://127.0.0.1:11434`).
+Le serveur se **recharge tout seul** quand le code Python change (quelques secondes). Si une ancienne version tourne encore, relancer `lancer.bat` l'arrête et la remplace automatiquement ; l'interface affiche un bandeau rouge si le serveur n'est pas à jour.
+
+Options : `python run.py --no-browser`, `--no-reload`. Variables d'environnement : `DEEPLEARNING_PORT` (défaut 8765), `DEEPLEARNING_DATA` (dossier des données), `OLLAMA_URL` (défaut `http://127.0.0.1:11434`).
 
 ## Fonctionnalités
 
 | Zone | Ce qu'on peut faire |
 | --- | --- |
 | **Bibliothèque** | Matières (modules) rangées par **semestre** (le semestre en cours est déplié, réglable dans ⚙), cours et documents générés rangés sous leur cours d'origine, recherche plein texte, glisser-déposer de fichiers (sur une matière pour l'y ranger). |
-| **Import** | PDF (titres détectés d'après la taille de police, tableaux, en-têtes/pieds de page répétés supprimés), DOCX (titres, listes, gras/italique, liens, tableaux), PPTX (une section par diapositive, puces, tableaux, notes de l'orateur). |
-| **CM / TD / TP** | Chaque document de cours est classé en cours magistral, TD ou TP — deviné d'après le nom du fichier (« TD2_routage.pdf », « TP-Docker.pptx »), modifiable à l'import et dans l'en-tête du document. Dans la bibliothèque, chaque matière les regroupe par catégorie. |
+| **Import** | PDF (titres d'après la taille et le gras, paragraphes reconstitués, puces Word, commandes en police à chasse fixe → blocs de code, tableaux, repères pour les captures d'écran, en-têtes/pieds de page supprimés), DOCX (titres, listes, gras/italique, liens, tableaux), PPTX (une section par diapositive, titres, encadrés de terminal → blocs de code, commandes en ligne, tableaux, notes de l'orateur). |
+| **CM / TD / TP / CR** | Chaque document de cours est classé en cours magistral, TD, TP ou compte-rendu — deviné d'après le nom du fichier (« TD2_routage.pdf », « TP-Docker.pptx », « Compte-rendu… »), modifiable à l'import et dans l'en-tête du document. Un compte-rendu est rattaché à son sujet de TD / TP (automatiquement quand c'est possible) et apparaît sous lui dans la bibliothèque. |
+| **Traduction** | Les cours en anglais sont repérés automatiquement ; un clic les traduit en français, section par section, avec les termes techniques sous la forme « noyau (kernel) ». Commandes et blocs de code restent intacts, et l'original anglais est conservé (« revenir à l'anglais »). |
 | **Cours d'origine** | Onglet *Original* : le fichier importé s'affiche tel quel dans l'outil. Les PDF directement ; les Word / PowerPoint sont convertis en PDF par **Microsoft Office** (une fois, puis mis en cache). |
 | **Calendrier** | Vue mensuelle des examens, partiels, oraux, TP notés et rendus, liés à une matière ; compte à rebours sur l'accueil et à côté de chaque matière ; export `.ics` vers Google Agenda / Outlook / téléphone. |
 | **Pages scannées** | Les pages PDF sans texte sont repérées ; le bouton *Transcrire avec l'IA* les lit avec un modèle **vision** (ex. Gemma). |
 | **Éditeur** | Markdown avec aperçu côte à côte, titres, listes (continuation auto), tableaux, surlignage `==texte==`, formules `$…$`, Ctrl+B/I/K/S/F, rechercher/remplacer, mode concentration, sauvegarde automatique, export `.md` / page imprimable (PDF). |
-| **IA — Générer** | Fiche de révision, résumé, exercices corrigés (corrigés regroupés à la fin), QCM, flashcards, questions d'examen, explication simplifiée, glossaire, plan / carte mentale, **corrigé détaillé d'un TD / TP**, demande libre. Sur tout le cours ou seulement la sélection, avec difficulté, nombre et consignes. |
+| **IA — Générer** | Fiche de révision, résumé, exercices corrigés (corrigés regroupés à la fin), QCM, flashcards, questions d'examen, explication simplifiée, glossaire, plan / carte mentale, **corrigé détaillé d'un TD / TP**, **relecture d'un compte-rendu** (comparé au sujet : couverture des attendus, erreurs techniques, améliorations), demande libre. Sur tout le cours ou seulement la sélection, avec difficulté, nombre et consignes. |
 | **IA — Discuter** | Chat avec le cours (les passages pertinents sont retrouvés automatiquement pour les cours longs), enregistrable comme note. |
 | **IA — Outils texte** | Sur la sélection : corriger, reformuler, simplifier, développer, résumer, structurer, exemples, traduire, ou consigne libre ; puis *Remplacer* / *Insérer après* (annulable avec Ctrl+Z). |
 | **QCM** | Quiz interactif noté (raccourcis 1–4 / Entrée), explications, historique des scores, conversion des erreurs en flashcards. |

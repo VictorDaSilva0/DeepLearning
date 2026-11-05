@@ -1,16 +1,16 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="fr">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>DeepLearning — atelier de révision</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧠</text></svg>">
-  <link rel="stylesheet" href="/static/style.css?v=4">
+  <link rel="stylesheet" href="/static/style.css?v=6">
   <!-- KaTeX (formules) : optionnel, chargé depuis un CDN quand Internet est disponible. -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
-  <script defer src="/static/app.js?v=3"></script>
+  <script defer src="/static/app.js?v=6"></script>
 </head>
 <body>
 <div id="app" class="layout">
@@ -54,6 +54,12 @@
 
   <!-- ============================================================ Zone centrale -->
   <main id="main">
+
+    <div id="update-banner" class="update-banner" hidden>
+      <span>⚠ DeepLearning a été mis à jour, mais le serveur tourne encore sur l'<b>ancienne version</b> : certaines fonctions ne marcheront pas.
+        Double-clique sur <b>lancer.bat</b> (il remplace l'ancien serveur), puis recharge la page.</span>
+      <button id="update-reload" class="btn small">↻ Recharger la page</button>
+    </div>
 
     <!-- Accueil -->
     <section id="view-home" class="view home">
@@ -106,8 +112,10 @@
           <option value="cours">📘 CM</option>
           <option value="td">📗 TD</option>
           <option value="tp">🔧 TP</option>
+          <option value="rendu">📑 Compte-rendu</option>
           <option value="note">📝 Note</option>
         </select>
+        <select id="doc-parent" class="select small" title="Sujet de TD / TP auquel répond ce compte-rendu" hidden></select>
         <input id="doc-title" class="doc-title" placeholder="Titre" maxlength="300">
         <select id="doc-subject" class="select small" title="Matière"></select>
         <div class="spacer"></div>
@@ -130,6 +138,12 @@
       </header>
 
       <div id="doc-tabs" class="tabs doc-tabs" hidden></div>
+
+      <div id="lang-banner" class="banner info" hidden>
+        <span>🌐 Ce document est en <b>anglais</b>.</span>
+        <button id="btn-translate" class="btn small accent">Traduire en français</button>
+        <span id="lang-status" class="muted small">Les termes techniques garderont leur nom anglais entre parenthèses, ex. « noyau (kernel) ».</span>
+      </div>
 
       <div id="scan-banner" class="banner" hidden>
         <span>📷 <b id="scan-count"></b> page(s) scannée(s) n'ont pas de texte.</span>
@@ -184,6 +198,7 @@
         <footer class="statusbar">
           <span id="doc-stats"></span>
           <span id="doc-source" class="muted"></span>
+          <span id="doc-translated" class="muted" hidden>🌐 Traduit de l'anglais par l'IA · <button class="link" id="btn-untranslate">revenir à l'anglais</button></span>
           <span class="spacer"></span>
           <span id="save-state" class="muted"></span>
         </footer>

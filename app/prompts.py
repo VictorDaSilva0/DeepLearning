@@ -180,6 +180,23 @@ TASKS: dict[str, dict] = {
             "Termine par une section ## Points de méthode à retenir."
         ),
     },
+    "relecture": {
+        "label": "Relecture du compte-rendu",
+        "kind": "relecture",
+        "reserve": 4500,
+        "prompt": (
+            "Le document ci-dessus est le compte-rendu rédigé par l'étudiant{subject_hint}. Relis-le comme un "
+            "enseignant exigeant mais bienveillant et rédige :\n"
+            "## Couverture du sujet — un tableau | Attendu du sujet | Statut (✅ / ⚠️ / ❌) | Commentaire | qui "
+            "vérifie chaque livrable et chaque critère d'évaluation demandés{subject_only}.\n"
+            "## Erreurs et imprécisions techniques — commandes, configurations ou explications fausses, "
+            "risquées ou incomplètes, avec la correction.\n"
+            "## Points forts\n"
+            "## Améliorations conseillées — concrètes et classées par priorité.\n"
+            "## Ce qu'il faut retenir pour l'examen — les notions du TP à maîtriser.\n"
+            "Termine par une appréciation globale en une phrase. Ne donne pas de note chiffrée."
+        ),
+    },
     "custom": {
         "label": "Demande libre",
         "kind": "note",
@@ -206,6 +223,39 @@ TRANSFORMS: dict[str, str] = {
     "traduire_fr": "Traduis le texte suivant en français.",
 }
 
+SYSTEM_TRANSLATOR = (
+    "Tu es un traducteur technique spécialisé en informatique (systèmes, réseaux, Linux, programmation). "
+    "Tu traduis de l'anglais vers le français des supports de cours au format Markdown, avec un français "
+    "naturel, précis et pédagogique. Tu renvoies uniquement la traduction, sans aucun commentaire."
+)
+
+
+def translate_prompt(chunk: str, part: int, total: int) -> str:
+    return (
+        f"Traduis en français cette partie ({part}/{total}) d'un cours, en respectant STRICTEMENT ces règles :\n"
+        "1. Termes techniques : écris le terme français suivi du terme anglais d'origine entre parenthèses, à sa "
+        "première apparition dans chaque section, puis le terme français seul. Exemples : « noyau (kernel) », "
+        "« interpréteur de commandes (shell) », « caractères génériques (wildcards) », « système de fichiers "
+        "(filesystem) ». Si un terme est habituellement gardé en anglais en français (Linux, shell, alias, "
+        "script, root…), garde-le tel quel.\n"
+        "2. Ne traduis JAMAIS ce qui est entre ``` (blocs de code, sorties de terminal) ni entre ` (code en ligne), "
+        "ni les commandes, options, noms de fichiers, chemins, variables et URL : recopie-les à l'identique.\n"
+        "3. Conserve exactement la structure Markdown : titres (avec leur numéro), listes et indentation, "
+        "**gras**, *italique*, tableaux, citations (>), blocs de code et lignes vides.\n"
+        "4. Traduis aussi les titres et les notes de l'orateur.\n"
+        "5. Renvoie uniquement le Markdown traduit, sans balises <texte>.\n\n"
+        f"<texte>\n{chunk}\n</texte>"
+    )
+
+
+def translate_title_prompt(title: str) -> str:
+    return (
+        "Traduis ce titre de cours en français, de façon concise, sans parenthèses ni guillemets, en gardant "
+        f"les sigles et numéros (ex. « LPIC1 101 Chapter 02 - Using the shell » → « LPIC1 101 Chapitre 02 - "
+        f"Utiliser le shell »). Renvoie uniquement le titre traduit.\n\nTitre : {title}"
+    )
+
+
 OCR_PROMPT = (
     "Transcris fidèlement en Markdown tout le texte de cette page de cours : titres, paragraphes, listes, "
     "tableaux (en tableau Markdown) et formules (en LaTeX entre $). Si la page contient un schéma important, "
@@ -217,23 +267,37 @@ DOC_LABELS = {
     "cours": "le cours magistral (CM)",
     "td": "le sujet de TD (travaux dirigés)",
     "tp": "le sujet de TP (travaux pratiques)",
+    "rendu": "le compte-rendu rédigé par l'étudiant",
 }
 
 
 def task_user_prompt(
-    task: str, title: str, source: str, count: int, difficulty: str, instructions: str, doc_kind: str = "cours"
+    task: str,
+    title: str,
+    source: str,
+    count: int,
+    difficulty: str,
+    instructions: str,
+    doc_kind: str = "cours",
+    subject: tuple[str, str] | None = None,
 ) -> str:
+    """subject = (titre, contenu) du sujet de TD/TP auquel est rattaché un compte-rendu."""
     spec = TASKS[task]
     body = spec["prompt"].format(
         count=count,
         difficulty=DIFFICULTY_LABELS.get(difficulty, difficulty),
         instructions=instructions or "Aide-moi à réviser ce cours.",
+        subject_hint=" en réponse au sujet fourni" if subject else "",
+        subject_only=" par le sujet" if subject else " (déduis-les du compte-rendu lui-même)",
     )
     extra = ""
     if instructions and task != "custom":
         extra = f"\n\nConsignes supplémentaires de l'étudiant : {instructions}"
     label = DOC_LABELS.get(doc_kind, "le document")
-    return f"Voici {label} « {title} » :\n\n<cours>\n{source}\n</cours>\n\n{body}{extra}"
+    intro = ""
+    if subject:
+        intro = f"Voici le sujet « {subject[0]} » :\n\n<sujet>\n{subject[1]}\n</sujet>\n\n"
+    return f"{intro}Voici {label} « {title} » :\n\n<cours>\n{source}\n</cours>\n\n{body}{extra}"
 
 
 def condense_prompt(part: int, total: int, words: int, chunk: str) -> str:

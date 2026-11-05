@@ -6,6 +6,7 @@ import asyncio
 import base64
 import json
 import logging
+import os
 import re
 import uuid
 from contextlib import asynccontextmanager
@@ -21,6 +22,7 @@ from pydantic import BaseModel, Field
 from . import __version__, config, db, importers, llm, office, prompts, render, srs
 
 log = logging.getLogger("deeplearning")
+LOADED_CODE = config.code_fingerprint()  # version du code chargée par ce processus
 
 
 @asynccontextmanager
@@ -34,9 +36,33 @@ app.mount("/static", StaticFiles(directory=config.STATIC_DIR), name="static")
 
 KINDS = {
     "cours", "td", "tp", "note", "fiche", "resume", "exercices", "qcm", "flashcards",
-    "explication", "glossaire", "plan", "questions", "corrige",
+    "explication", "glossaire", "plan", "questions", "corrige", "rendu", "relecture",
 }
-SOURCE_KINDS = {"cours", "td", "tp"}  # cours = CM
+SOURCE_KINDS = {"cours", "td", "tp", "rendu"}  # cours = CM ; rendu = compte-rendu de TD/TP
+
+
+def _number_in(text: str, prefix: str) -> str | None:
+    m = re.search(rf"(?:^|[^a-z]){prefix}\s*[-_]?\s*(\d+)", text or "", re.IGNORECASE)
+    return m.group(1) if m else None
+
+
+def _link_report(doc: dict[str, Any]) -> dict[str, Any]:
+    """Rattache un compte-rendu au sujet de TD/TP correspondant de la même matière (même numéro, ou seul sujet)."""
+    if doc["kind"] != "rendu" or doc.get("parent_id") or doc.get("subject_id") is None:
+        return doc
+    subjects = [d for d in db.list_documents(doc["subject_id"]) if d["kind"] in ("td", "tp") and d["id"] != doc["id"]]
+    if not subjects:
+        return doc
+    name = f"{doc['title']} {doc.get('source_name') or ''}"
+    for prefix in ("tp", "td"):
+        num = _number_in(name, prefix)
+        if num:
+            same = [d for d in subjects if d["kind"] == prefix and _number_in(f"{d['title']} {d.get('source_name') or ''}", prefix) == num]
+            if len(same) == 1:
+                return db.update_document(doc["id"], parent_id=same[0]["id"]) or doc
+    if len(subjects) == 1:
+        return db.update_document(doc["id"], parent_id=subjects[0]["id"]) or doc
+    return doc
 
 
 # =========================================================================== utilitaires
@@ -78,6 +104,20 @@ def _content_disposition(kind: str, filename: str) -> str:
 @app.get("/", response_class=HTMLResponse)
 def index() -> FileResponse:
     return FileResponse(config.STATIC_DIR / "index.html", headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/api/version")
+def version_info() -> dict[str, Any]:
+    """Utilisé par run.py et l'interface pour détecter un serveur qui tourne sur un code périmé."""
+    return {
+        "app": "DeepLearning",
+        "version": __version__,
+        "code": LOADED_CODE,
+        "stale": config.code_fingerprint() != LOADED_CODE,
+        "pid": os.getpid(),
+        # Processus lancé par run.py (superviseur du rechargement automatique) : c'est lui qu'on arrête.
+        "supervisor": int(os.environ["DL_SUPERVISOR_PID"]) if os.environ.get("DL_SUPERVISOR_PID", "").isdigit() else None,
+    }
 
 
 # =========================================================================== Ollama & réglages
@@ -176,6 +216,7 @@ def search(q: str) -> list[dict[str, Any]]:
 def get_document(doc_id: int) -> dict[str, Any]:
     doc = _get_doc_or_404(doc_id)
     doc["scanned_pages"] = [int(m.group(1)) for m in importers.SCAN_MARKER_RE.finditer(doc["content"] or "")]
+    doc["lang"] = llm.detect_language(doc["content"] or "")
     return doc
 
 
@@ -333,6 +374,17 @@ async def import_files(
                 "scanned_pages": len(res.scanned_pages),
             }
         )
+    # Comptes-rendus : rattachement à leur sujet (après coup, le sujet peut être dans le même envoi).
+    for r in results:
+        if r.get("document", {}).get("kind") == "rendu":
+            linked = _link_report(db.get_document(r["document"]["id"]) or {})
+            if linked:
+                r["document"] = _listing(linked)
+    # Langue détectée (pour proposer la traduction des cours en anglais).
+    for r in results:
+        if "document" in r:
+            full = db.get_document(r["document"]["id"])
+            r["document"]["lang"] = llm.detect_language(full["content"]) if full else None
     return results
 
 
@@ -444,11 +496,25 @@ async def generate(body: GenerateIn) -> StreamingResponse:
         raise HTTPException(400, "Le document est vide : rien à analyser.")
     settings = db.get_settings()
     schema = spec.get("schema")
+    # Relecture d'un compte-rendu : on joint le sujet de TD/TP auquel il est rattaché.
+    subject: tuple[str, str] | None = None
+    reserve = spec["reserve"]
+    if body.task == "relecture" and doc.get("parent_id"):
+        parent = db.get_document(doc["parent_id"])
+        if parent and parent["content"].strip():
+            limit = llm.input_budget_chars(settings, reserve) // 2
+            text = parent["content"]
+            if len(text) > limit:
+                text = text[:limit] + "\n\n[…sujet tronqué…]"
+            subject = (parent["title"], text)
+            reserve += llm.estimate_tokens(text)
 
     async def run() -> AsyncIterator[dict[str, Any]]:
         yield {"type": "status", "message": "Préparation du cours…"}
+        if subject:
+            yield {"type": "status", "message": f"Sujet joint à la relecture : « {subject[0]} »."}
         source = source_text
-        async for ev in llm.fit_source(source_text, settings, spec["reserve"]):
+        async for ev in llm.fit_source(source_text, settings, reserve):
             if ev["type"] == "source":
                 source = ev["text"]
                 if ev["condensed"]:
@@ -463,7 +529,7 @@ async def generate(body: GenerateIn) -> StreamingResponse:
                 "role": "user",
                 "content": prompts.task_user_prompt(
                     body.task, doc["title"], source, body.count, body.difficulty, body.instructions.strip(),
-                    doc_kind=doc["kind"],
+                    doc_kind=doc["kind"], subject=subject,
                 ),
             },
         ]
@@ -647,6 +713,94 @@ async def ocr_document(doc_id: int) -> StreamingResponse:
         yield {"type": "done", "document": _listing(db.get_document(doc_id) or doc)}
 
     return _ndjson(run())
+
+
+# =========================================================================== traduction
+
+def _strip_wrappers(text: str) -> str:
+    text = text.strip()
+    text = re.sub(r"^</?texte>\s*|\s*</?texte>$", "", text)
+    m = re.fullmatch(r"```(?:markdown|md)\s*\n(.*?)\n```", text, flags=re.S)
+    return (m.group(1) if m else text).strip()
+
+
+@app.post("/api/documents/{doc_id}/translate")
+async def translate_document(doc_id: int) -> StreamingResponse:
+    """Traduit un cours anglais en français, section par section ; l'anglais est conservé pour revenir en arrière."""
+    doc = _get_doc_or_404(doc_id)
+    content = doc["content"] or ""
+    if not content.strip():
+        raise HTTPException(400, "Le document est vide.")
+    data = doc.get("data") if isinstance(doc.get("data"), dict) else {}
+    if data.get("translation"):
+        raise HTTPException(400, "Ce document a déjà été traduit.")
+    settings = db.get_settings()
+    chunks = llm.split_markdown_sections(content, 3500)
+
+    async def run() -> AsyncIterator[dict[str, Any]]:
+        model = await llm.resolve_model(settings)
+        parts: list[str] = []
+        for i, chunk in enumerate(chunks, start=1):
+            yield {"type": "status", "message": f"Traduction de la partie {i}/{len(chunks)}…", "part": i, "total": len(chunks)}
+            expected = chunk.count("```")
+            translated = ""
+            for attempt in range(2):
+                pieces: list[str] = []
+                async for ev in llm.chat_stream(
+                    [
+                        {"role": "system", "content": prompts.SYSTEM_TRANSLATOR},
+                        {"role": "user", "content": prompts.translate_prompt(chunk, i, len(chunks))},
+                    ],
+                    settings,
+                    think=False,
+                    temperature=0.2 if attempt == 0 else 0.05,
+                    num_predict=llm.estimate_tokens(chunk) * 2 + 400,
+                ):
+                    if ev["type"] == "token":
+                        pieces.append(ev["text"])
+                        yield ev
+                translated = _strip_wrappers("".join(pieces))
+                if translated and translated.count("```") == expected:
+                    break  # blocs de code intacts
+                yield {"type": "status", "message": f"Partie {i} : structure à revérifier, nouvel essai…"}
+            parts.append(translated or chunk)
+        title = doc["title"]
+        try:
+            new_title = _strip_wrappers(
+                await llm.chat_once(
+                    [{"role": "user", "content": prompts.translate_title_prompt(title)}],
+                    settings, think=False, temperature=0.1, num_predict=80,
+                )
+            ).strip(" «»\"'")
+            if new_title and len(new_title) < 200 and "\n" not in new_title:
+                title = new_title
+        except llm.OllamaError:
+            pass
+        current = db.get_document(doc_id)
+        if not current:
+            return
+        new_data = dict(current["data"]) if isinstance(current.get("data"), dict) else {}
+        new_data["translation"] = {
+            "from": "en", "to": "fr", "model": model, "date": db.now(),
+            "original_title": current["title"], "original_content": current["content"],
+        }
+        updated = db.update_document(doc_id, title=title, content="\n\n".join(parts) + "\n", data=new_data)
+        yield {"type": "done", "document": _listing(updated or current)}
+
+    return _ndjson(run())
+
+
+@app.post("/api/documents/{doc_id}/untranslate")
+def untranslate_document(doc_id: int) -> dict[str, Any]:
+    doc = _get_doc_or_404(doc_id)
+    data = doc.get("data") if isinstance(doc.get("data"), dict) else {}
+    tr = data.pop("translation", None)
+    if not tr:
+        raise HTTPException(400, "Ce document n'a pas été traduit.")
+    updated = db.update_document(
+        doc_id, title=tr["original_title"], content=tr["original_content"], data=data or None
+    )
+    return _listing(updated or doc)
 
 
 # =========================================================================== flashcards
