@@ -48,11 +48,11 @@ def title_from_filename(name: str) -> str:
 def import_file(path: Path, original_name: str) -> ImportResult:
     ext = Path(original_name).suffix.lower()
     if ext in office.LEGACY:
-        # Ancien .doc / .ppt : Word / PowerPoint le réenregistrent en .docx / .pptx, lu ensuite normalement.
+        # Ancien .doc / .ppt : converti en .docx / .pptx avec Word / PowerPoint, puis lu normalement.
         try:
             modern = office.to_modern(path)
         except office.ConversionError as exc:
-            raise ValueError(f"les anciens fichiers {ext} sont convertis avec Microsoft Office — {exc}") from exc
+            raise ValueError(str(exc)) from exc
         try:
             return import_file(modern, Path(original_name).stem + modern.suffix)
         finally:
@@ -744,7 +744,12 @@ def pptx_to_markdown(path: Path) -> tuple[str, list[str]]:
         title_shape = _find_title(slide)
         title = ""
         if title_shape is not None and title_shape.has_text_frame:
-            parts = [re.sub(r"\s+", " ", _para_text(p)).strip() for p in title_shape.text_frame.paragraphs]
+            # Paragraphes et retours à la ligne du titre (les .ppt reconvertis n'ont souvent que des retours à la ligne).
+            parts = [
+                re.sub(r"\s+", " ", line).strip()
+                for p in title_shape.text_frame.paragraphs
+                for line in _para_text(p).split("\n")
+            ]
             title = " – ".join(p for p in parts if p)
         out.append(f"## {index}. {title}" if title else f"## Diapositive {index}")
 
