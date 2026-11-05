@@ -1,0 +1,51 @@
+# ---------------------------------------------------------------- Données personnelles
+# Base de données, cours importés et fichiers d'origine : ils restent sur ta machine.
+data/
+
+# ---------------------------------------------------------------- Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+*.spec
+
+# Environnements virtuels
+.venv/
+venv/
+env/
+ENV/
+
+# Tests / outils
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+
+# ---------------------------------------------------------------- Node (si un jour on ajoute un build front)
+node_modules/
+
+# ---------------------------------------------------------------- Secrets / config locale
+.env
+.env.*
+!.env.example
+
+# ---------------------------------------------------------------- Éditeurs & OS
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---------------------------------------------------------------- Claude Code (réglages locaux)
+.claude/settings.local.json
+
+# ---------------------------------------------------------------- Divers
+*.log
+tmp/

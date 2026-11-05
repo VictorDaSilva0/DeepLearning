@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DeepLearning — atelier de révision</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧠</text></svg>">
+  <link rel="stylesheet" href="/static/style.css?v=1">
+  <!-- KaTeX (formules) : optionnel, chargé depuis un CDN quand Internet est disponible. -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+  <script defer src="/static/app.js?v=1"></script>
+</head>
+<body>
+<div id="app" class="layout">
+
+  <!-- ============================================================ Bibliothèque -->
+  <aside id="sidebar">
+    <a class="brand" href="#">
+      <span class="brand-logo">🧠</span>
+      <span><b>DeepLearning</b><small>atelier de révision</small></span>
+    </a>
+
+    <div class="side-actions">
+      <button id="btn-import" class="btn primary">⬆ Importer</button>
+      <button id="btn-new-note" class="btn">＋ Note</button>
+    </div>
+
+    <div class="search-box">
+      <input id="search" type="search" placeholder="Rechercher dans mes cours…" autocomplete="off">
+      <div id="search-results" class="search-results" hidden></div>
+    </div>
+
+    <button id="btn-review-all" class="review-pill" title="Réviser les flashcards du jour">
+      🃏 À réviser aujourd'hui <b id="due-count">0</b>
+    </button>
+
+    <nav id="library" class="library"></nav>
+
+    <button id="btn-new-subject" class="btn ghost small full">＋ Nouvelle matière</button>
+
+    <div class="side-footer">
+      <span id="ollama-dot" class="dot"></span>
+      <span id="ollama-label" class="muted">Connexion à Ollama…</span>
+      <button id="btn-settings" class="icon-btn" title="Réglages de l'IA">⚙</button>
+    </div>
+  </aside>
+
+  <!-- ============================================================ Zone centrale -->
+  <main id="main">
+
+    <!-- Accueil -->
+    <section id="view-home" class="view home">
+      <div class="home-inner">
+        <h1>Bonjour 👋</h1>
+        <p class="lead">Importe tes cours, retravaille-les dans l'éditeur, et laisse l'IA locale te préparer fiches, exercices, QCM et flashcards.</p>
+
+        <div id="home-drop" class="dropzone big">
+          <div class="dz-icon">📥</div>
+          <div><b>Glisse tes cours ici</b> ou <button class="link" id="home-browse">parcours tes fichiers</button></div>
+          <small>PDF · Word (.docx) · PowerPoint (.pptx) · Texte · Markdown</small>
+        </div>
+
+        <div class="stat-grid" id="home-stats"></div>
+
+        <div class="home-cols">
+          <div class="card">
+            <h3>Récemment modifiés</h3>
+            <ul id="home-recent" class="plain-list"></ul>
+          </div>
+          <div class="card">
+            <h3>Derniers QCM</h3>
+            <ul id="home-attempts" class="plain-list"></ul>
+          </div>
+        </div>
+
+        <div class="card how">
+          <h3>Comment ça marche</h3>
+          <ol>
+            <li><b>Importe</b> un cours : il est converti en texte Markdown modifiable (le fichier d'origine reste consultable).</li>
+            <li><b>Retravaille</b>-le dans l'éditeur, ou sélectionne un passage et utilise les <i>Outils texte</i> (corriger, reformuler, simplifier…).</li>
+            <li>Ouvre le panneau <b>✨ IA</b> pour générer une fiche, des exercices, un QCM, des flashcards… ou discuter avec ton cours.</li>
+            <li>Révise chaque jour les <b>flashcards</b> : la répétition espacée te les représente au bon moment.</li>
+          </ol>
+        </div>
+      </div>
+    </section>
+
+    <!-- Document -->
+    <section id="view-doc" class="view doc" hidden>
+      <header class="doc-header">
+        <span id="doc-kind" class="badge"></span>
+        <input id="doc-title" class="doc-title" placeholder="Titre" maxlength="300">
+        <select id="doc-subject" class="select small" title="Matière"></select>
+        <div class="spacer"></div>
+        <div id="mode-switch" class="seg" role="group" aria-label="Affichage">
+          <button data-mode="edit" title="Éditeur seul">✎</button>
+          <button data-mode="split" title="Éditeur + aperçu">◫</button>
+          <button data-mode="preview" title="Aperçu seul">👁</button>
+        </div>
+        <button id="btn-source" class="icon-btn" title="Ouvrir le fichier d'origine (PDF, Word, PowerPoint)">📄</button>
+        <div class="menu-wrap">
+          <button id="btn-export" class="icon-btn" title="Exporter / imprimer">⤓</button>
+          <div id="menu-export" class="menu" hidden>
+            <button data-export="md">Markdown (.md)</button>
+            <button data-export="html">Page imprimable / PDF</button>
+            <button data-export="copy">Copier le texte</button>
+          </div>
+        </div>
+        <button id="btn-delete" class="icon-btn danger" title="Supprimer le document">🗑</button>
+        <button id="btn-toggle-ai" class="btn small accent" title="Afficher / masquer l'assistant IA">✨ IA</button>
+      </header>
+
+      <div id="doc-tabs" class="tabs doc-tabs" hidden></div>
+
+      <div id="scan-banner" class="banner" hidden>
+        <span>📷 <b id="scan-count"></b> page(s) scannée(s) n'ont pas de texte.</span>
+        <button id="btn-ocr" class="btn small accent">Transcrire avec l'IA</button>
+        <span id="ocr-status" class="muted"></span>
+      </div>
+
+      <div id="pane-editor" class="pane editor-pane">
+        <div id="toolbar" class="toolbar">
+          <button data-cmd="h1" title="Titre 1">H1</button>
+          <button data-cmd="h2" title="Titre 2">H2</button>
+          <button data-cmd="h3" title="Titre 3">H3</button>
+          <span class="sep"></span>
+          <button data-cmd="bold" title="Gras (Ctrl+B)"><b>B</b></button>
+          <button data-cmd="italic" title="Italique (Ctrl+I)"><i>I</i></button>
+          <button data-cmd="strike" title="Barré"><s>S</s></button>
+          <button data-cmd="mark" title="Surligner"><mark>ab</mark></button>
+          <button data-cmd="code" title="Code">&lt;/&gt;</button>
+          <span class="sep"></span>
+          <button data-cmd="ul" title="Liste à puces">• Liste</button>
+          <button data-cmd="ol" title="Liste numérotée">1. Liste</button>
+          <button data-cmd="task" title="Case à cocher">☑</button>
+          <button data-cmd="quote" title="Citation">❝</button>
+          <span class="sep"></span>
+          <button data-cmd="link" title="Lien (Ctrl+K)">🔗</button>
+          <button data-cmd="table" title="Tableau">▦</button>
+          <button data-cmd="math" title="Formule LaTeX">∑</button>
+          <button data-cmd="codeblock" title="Bloc de code">{ }</button>
+          <button data-cmd="hr" title="Séparateur">―</button>
+          <span class="sep"></span>
+          <button data-cmd="find" title="Rechercher / remplacer (Ctrl+F)">🔍</button>
+          <button data-cmd="focus" title="Mode concentration">⛶</button>
+        </div>
+
+        <div id="find-bar" class="find-bar" hidden>
+          <input id="find-input" placeholder="Rechercher" autocomplete="off">
+          <input id="replace-input" placeholder="Remplacer par" autocomplete="off">
+          <label class="check" title="Respecter la casse"><input type="checkbox" id="find-case"> Aa</label>
+          <span id="find-count" class="muted"></span>
+          <button id="find-prev" class="icon-btn" title="Précédent">↑</button>
+          <button id="find-next" class="icon-btn" title="Suivant">↓</button>
+          <button id="replace-one" class="btn small">Remplacer</button>
+          <button id="replace-all" class="btn small">Tout</button>
+          <button id="find-close" class="icon-btn" title="Fermer">✕</button>
+        </div>
+
+        <div id="editor-split" class="editor-split">
+          <textarea id="editor" spellcheck="true" placeholder="Écris ici en Markdown… (# Titre, **gras**, - liste, $formule$)"></textarea>
+          <article id="preview" class="markdown"></article>
+        </div>
+
+        <footer class="statusbar">
+          <span id="doc-stats"></span>
+          <span id="doc-source" class="muted"></span>
+          <span class="spacer"></span>
+          <span id="save-state" class="muted"></span>
+        </footer>
+      </div>
+
+      <div id="pane-quiz" class="pane scroll" hidden></div>
+      <div id="pane-review" class="pane scroll" hidden></div>
+      <div id="pane-cards" class="pane scroll" hidden></div>
+    </section>
+
+    <!-- Révision globale -->
+    <section id="view-review" class="view scroll" hidden>
+      <div class="review-page">
+        <div class="review-page-head">
+          <h2>🃏 Révision du jour</h2>
+          <select id="review-subject" class="select small"></select>
+        </div>
+        <div id="review-global"></div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ============================================================ Assistant IA -->
+  <aside id="ai-panel">
+    <div class="ai-head">
+      <b>✨ Assistant IA</b>
+      <span id="ai-model" class="chip muted" title="Modèle utilisé"></span>
+      <span class="spacer"></span>
+      <button id="ai-close" class="icon-btn" title="Masquer">✕</button>
+    </div>
+    <div id="ai-tabs" class="tabs">
+      <button data-tab="generate" class="active">Générer</button>
+      <button data-tab="chat">Discuter</button>
+      <button data-tab="tools">Outils texte</button>
+    </div>
+
+    <div id="ai-nodoc" class="ai-empty">
+      <p>Ouvre un cours dans la bibliothèque pour que l'IA puisse travailler dessus.</p>
+    </div>
+
+    <!-- Générer -->
+    <div id="ai-generate" class="ai-body">
+      <div id="task-grid" class="task-grid"></div>
+      <div class="ai-options">
+        <div class="row" id="opt-count-row">
+          <label for="opt-count">Nombre</label>
+          <input id="opt-count" type="number" min="1" max="60" value="10">
+        </div>
+        <div class="row" id="opt-diff-row">
+          <label>Difficulté</label>
+          <div class="seg small" id="opt-difficulty">
+            <button data-v="facile">Facile</button>
+            <button data-v="moyen" class="active">Moyen</button>
+            <button data-v="difficile">Difficile</button>
+          </div>
+        </div>
+        <label class="check" id="opt-selection-row" hidden>
+          <input type="checkbox" id="opt-selection"> <span>Seulement la sélection (<b id="sel-size">0</b> car.)</span>
+        </label>
+        <textarea id="opt-instructions" rows="2" placeholder="Consignes supplémentaires (facultatif) : « insiste sur les formules », « niveau L1 »…"></textarea>
+        <div class="row">
+          <button id="btn-generate" class="btn primary grow">✨ Générer</button>
+          <button id="btn-gen-stop" class="btn" hidden>■ Stop</button>
+        </div>
+      </div>
+      <div id="gen-output" class="ai-output" hidden>
+        <div class="ai-status"><span class="spinner"></span><span id="gen-status"></span></div>
+        <details id="gen-thinking" class="thinking" hidden><summary>Réflexion du modèle</summary><pre></pre></details>
+        <div id="gen-result" class="markdown small"></div>
+        <div id="gen-done" class="done-card" hidden></div>
+      </div>
+    </div>
+
+    <!-- Discuter -->
+    <div id="ai-chat" class="ai-body chat" hidden>
+      <div id="chat-log" class="chat-log"></div>
+      <div id="chat-suggestions" class="chips"></div>
+      <form id="chat-form" class="chat-form">
+        <textarea id="chat-input" rows="2" placeholder="Pose une question sur ce cours… (Entrée pour envoyer)"></textarea>
+        <div class="row">
+          <button type="button" id="chat-save" class="btn small ghost" title="Enregistrer la discussion comme note">💾</button>
+          <button type="button" id="chat-clear" class="btn small ghost" title="Effacer la discussion">🗑</button>
+          <span class="spacer"></span>
+          <button type="button" id="chat-stop" class="btn small" hidden>■ Stop</button>
+          <button type="submit" id="chat-send" class="btn primary small">Envoyer</button>
+        </div>
+      </form>
+    </div>
+
+    <!-- Outils texte -->
+    <div id="ai-tools" class="ai-body" hidden>
+      <p class="muted small" id="tools-hint">Sélectionne un passage dans l'éditeur (sinon tout le document est utilisé), puis choisis une action.</p>
+      <div id="tool-grid" class="tool-grid"></div>
+      <div class="row">
+        <input id="tool-custom" placeholder="Ou ta consigne : « transforme en tableau »…">
+        <button id="tool-custom-go" class="btn small">OK</button>
+      </div>
+      <div id="tool-output" class="ai-output" hidden>
+        <div class="ai-status"><span class="spinner"></span><span id="tool-status"></span></div>
+        <div id="tool-result" class="markdown small"></div>
+        <div class="row wrap" id="tool-actions" hidden>
+          <button id="tool-replace" class="btn small primary">Remplacer</button>
+          <button id="tool-insert" class="btn small">Insérer après</button>
+          <button id="tool-copy" class="btn small">Copier</button>
+          <button id="tool-discard" class="btn small ghost">Ignorer</button>
+        </div>
+        <button id="tool-stop" class="btn small" hidden>■ Stop</button>
+      </div>
+    </div>
+  </aside>
+</div>
+
+<!-- ============================================================ Fenêtres -->
+<input type="file" id="file-input" multiple accept=".pdf,.docx,.pptx,.txt,.md,.markdown" hidden>
+<div id="drop-overlay" class="drop-overlay" hidden><div>📥 Dépose tes cours pour les importer</div></div>
+
+<dialog id="dlg-import" class="dialog">
+  <form method="dialog">
+    <h3>Importer des cours</h3>
+    <label class="field">Matière
+      <select id="imp-subject" class="select"></select>
+    </label>
+    <div id="imp-drop" class="dropzone">
+      <div>Glisse des fichiers ici ou <button type="button" class="link" id="imp-browse">parcours</button></div>
+      <small>PDF · .docx · .pptx · .txt · .md — les anciens .doc / .ppt doivent d'abord être réenregistrés en .docx / .pptx</small>
+    </div>
+    <ul id="imp-list" class="imp-list"></ul>
+    <footer>
+      <span id="imp-status" class="muted"></span>
+      <span class="spacer"></span>
+      <button value="cancel" class="btn">Fermer</button>
+      <button type="button" id="imp-go" class="btn primary" disabled>Importer</button>
+    </footer>
+  </form>
+</dialog>
+
+<dialog id="dlg-settings" class="dialog">
+  <form method="dialog" id="settings-form">
+    <h3>Réglages de l'IA</h3>
+    <label class="field">Modèle Ollama
+      <select id="set-model" class="select"></select>
+      <small class="muted" id="set-model-caps"></small>
+    </label>
+    <label class="field">Mémoire de contexte (tokens)
+      <select id="set-ctx" class="select">
+        <option value="8192">8 192 — rapide, cours courts</option>
+        <option value="16384">16 384 — recommandé</option>
+        <option value="32768">32 768 — cours longs</option>
+        <option value="65536">65 536 — très longs (plus de VRAM)</option>
+        <option value="131072">131 072 — énorme (lent)</option>
+      </select>
+      <small class="muted">Au-delà, le cours est d'abord condensé partie par partie (plus lent mais ça marche).</small>
+    </label>
+    <label class="field">Créativité (température) : <b id="set-temp-val"></b>
+      <input type="range" id="set-temp" min="0" max="1.2" step="0.05">
+      <small class="muted">Bas = fidèle et précis · Haut = plus varié</small>
+    </label>
+    <label class="check field" id="set-think-row">
+      <input type="checkbox" id="set-think">
+      <span>Mode réflexion (le modèle « réfléchit » avant de répondre : plus lent, parfois plus juste)</span>
+    </label>
+    <footer>
+      <span class="spacer"></span>
+      <button value="cancel" class="btn">Annuler</button>
+      <button type="button" id="set-save" class="btn primary">Enregistrer</button>
+    </footer>
+  </form>
+</dialog>
+
+<div id="toasts" class="toasts"></div>
+</body>
+</html>
