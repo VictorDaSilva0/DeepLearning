@@ -88,7 +88,9 @@ CREATE TABLE IF NOT EXISTS llm_cache (
 
 DOC_LIST_COLUMNS = (
     "id, subject_id, parent_id, kind, title, source_name, created_at, updated_at, "
-    "length(content) AS size"
+    "length(content) AS size, "
+    # Nombre de cours d'origine pour un document généré à partir de plusieurs CM (sinon NULL).
+    "CASE WHEN json_valid(data) THEN json_array_length(data, '$.sources') END AS sources_count"
 )
 
 

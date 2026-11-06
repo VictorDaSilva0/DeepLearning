@@ -36,9 +36,10 @@ app.mount("/static", StaticFiles(directory=config.STATIC_DIR), name="static")
 
 KINDS = {
     "cours", "td", "tp", "note", "fiche", "resume", "exercices", "qcm", "flashcards",
-    "explication", "glossaire", "plan", "questions", "corrige", "rendu", "relecture",
+    "explication", "glossaire", "plan", "questions", "corrige", "rendu", "relecture", "annale",
 }
-SOURCE_KINDS = {"cours", "td", "tp", "rendu"}  # cours = CM ; rendu = compte-rendu de TD/TP
+# cours = CM ; rendu = compte-rendu de TD/TP ; annale = contrôle d'une année précédente
+SOURCE_KINDS = {"cours", "td", "tp", "annale", "rendu"}
 
 
 def _number_in(text: str, prefix: str) -> str | None:
@@ -75,7 +76,11 @@ def _get_doc_or_404(doc_id: int) -> dict[str, Any]:
 
 
 def _listing(doc: dict[str, Any]) -> dict[str, Any]:
-    return {k: v for k, v in doc.items() if k not in {"content", "data"}} | {"size": len(doc.get("content") or "")}
+    out = {k: v for k, v in doc.items() if k not in {"content", "data"}} | {"size": len(doc.get("content") or "")}
+    data = doc.get("data")
+    if isinstance(data, dict) and isinstance(data.get("sources"), list):
+        out["sources_count"] = len(data["sources"])
+    return out
 
 
 def _ndjson(events: AsyncIterator[dict[str, Any]]) -> StreamingResponse:
@@ -397,6 +402,8 @@ class GenerateIn(BaseModel):
     difficulty: str = "moyen"
     instructions: str = Field("", max_length=4000)
     selection: str | None = None
+    # Plusieurs CM de la même matière → un seul document (ex. une fiche de révision pour toute la matière).
+    document_ids: list[int] | None = Field(None, max_length=80)
 
 
 def _normalize_qcm(data: Any) -> list[dict[str, Any]]:
@@ -490,12 +497,13 @@ async def generate(body: GenerateIn) -> StreamingResponse:
         raise HTTPException(400, "Tâche inconnue.")
     if body.task == "custom" and not body.instructions.strip():
         raise HTTPException(400, "Écris ta demande dans le champ « Consignes ».")
+    if body.document_ids and len(set(body.document_ids)) > 1:
+        return _generate_multi(doc, spec, body)
     use_selection = bool(body.selection and body.selection.strip())
     source_text = body.selection.strip() if use_selection else (doc["content"] or "")
     if not source_text.strip():
         raise HTTPException(400, "Le document est vide : rien à analyser.")
     settings = db.get_settings()
-    schema = spec.get("schema")
     # Relecture d'un compte-rendu : on joint le sujet de TD/TP auquel il est rattaché.
     subject: tuple[str, str] | None = None
     reserve = spec["reserve"]
@@ -533,55 +541,175 @@ async def generate(body: GenerateIn) -> StreamingResponse:
                 ),
             },
         ]
-        think = False if schema else None
-        thinking_on = bool(settings.get("think")) and think is None
-        parts: list[str] = []
-        info: dict[str, Any] = {}
-        async for ev in llm.chat_stream(
-            messages,
-            settings,
-            fmt=schema,
-            num_predict=None if thinking_on else spec["reserve"] + 800,
-            think=think,
-            temperature=0.3 if schema else None,
+        async for ev in _write_result(
+            body, spec, messages, settings, spec["reserve"],
+            title=f"{spec['label']} — {doc['title']}" + (" (extrait)" if use_selection else ""),
+            short_title=doc["title"],
+            subject_id=doc["subject_id"],
+            parent_id=doc["id"],
         ):
-            if ev["type"] == "token":
-                parts.append(ev["text"])
-                yield ev
-            elif ev["type"] == "thinking":
-                yield ev
-            elif ev["type"] == "done":
-                info = ev
+            yield ev
 
-        text = "".join(parts).strip()
-        if not text:
-            raise ValueError("Le modèle n'a renvoyé aucun texte.")
-        title = f"{spec['label']} — {doc['title']}" + (" (extrait)" if use_selection else "")
-        data = None
-        cards: list[dict[str, str]] = []
-        if body.task == "qcm":
-            questions = _normalize_qcm(llm.parse_json_loose(text))
-            if not questions:
-                raise ValueError("Le modèle n'a pas produit de questions exploitables. Réessaie.")
-            data = {"questions": questions}
-            content = _qcm_markdown(doc["title"], questions)
-        elif body.task == "flashcards":
-            cards = _normalize_cards(llm.parse_json_loose(text))
-            if not cards:
-                raise ValueError("Le modèle n'a pas produit de cartes exploitables. Réessaie.")
-            content = _cards_markdown(title, cards)
-        else:
-            content = re.sub(r"^```(?:markdown|md)?\s*\n(.*?)\n```\s*$", r"\1", text, flags=re.S)
+    return _ndjson(run())
 
-        new_doc = db.create_document(
-            title, content, spec["kind"], subject_id=doc["subject_id"], parent_id=doc["id"], data=data
-        )
-        if cards:
-            db.add_cards(new_doc["id"], cards)
-        warning = None
-        if info.get("done_reason") == "length":
-            warning = "La réponse a été coupée (limite de longueur atteinte). Augmente le contexte dans les réglages."
-        yield {"type": "done", "document": _listing(new_doc), "info": info, "warning": warning}
+
+async def _write_result(
+    body: GenerateIn,
+    spec: dict[str, Any],
+    messages: list[dict[str, Any]],
+    settings: dict[str, Any],
+    reserve: int,
+    *,
+    title: str,
+    short_title: str,
+    subject_id: int | None,
+    parent_id: int | None,
+    sources: list[int] | None = None,
+    header: str | None = None,
+) -> AsyncIterator[dict[str, Any]]:
+    """Appelle le modèle (en streaming), puis enregistre le document produit."""
+    schema = spec.get("schema")
+    think = False if schema else None
+    thinking_on = bool(settings.get("think")) and think is None
+    parts: list[str] = []
+    info: dict[str, Any] = {}
+    async for ev in llm.chat_stream(
+        messages,
+        settings,
+        fmt=schema,
+        num_predict=None if thinking_on else reserve + 800,
+        think=think,
+        temperature=0.3 if schema else None,
+    ):
+        if ev["type"] == "token":
+            parts.append(ev["text"])
+            yield ev
+        elif ev["type"] == "thinking":
+            yield ev
+        elif ev["type"] == "done":
+            info = ev
+
+    text = "".join(parts).strip()
+    if not text:
+        raise ValueError("Le modèle n'a renvoyé aucun texte.")
+    data: dict[str, Any] | None = {"sources": sources} if sources else None
+    cards: list[dict[str, str]] = []
+    if body.task == "qcm":
+        questions = _normalize_qcm(llm.parse_json_loose(text))
+        if not questions:
+            raise ValueError("Le modèle n'a pas produit de questions exploitables. Réessaie.")
+        data = (data or {}) | {"questions": questions}
+        content = _qcm_markdown(short_title, questions)
+    elif body.task == "flashcards":
+        cards = _normalize_cards(llm.parse_json_loose(text))
+        if not cards:
+            raise ValueError("Le modèle n'a pas produit de cartes exploitables. Réessaie.")
+        content = _cards_markdown(title, cards)
+    else:
+        content = re.sub(r"^```(?:markdown|md)?\s*\n(.*?)\n```\s*$", r"\1", text, flags=re.S)
+    if header:
+        # Juste sous le titre principal : la liste des CM couverts.
+        m = re.match(r"\s*#\s[^\n]*\n", content)
+        content = content[: m.end()] + f"\n{header}\n" + content[m.end():] if m else f"{header}\n\n{content}"
+
+    new_doc = db.create_document(title, content, spec["kind"], subject_id=subject_id, parent_id=parent_id, data=data)
+    if cards:
+        db.add_cards(new_doc["id"], cards)
+    warning = None
+    if info.get("done_reason") == "length":
+        warning = "La réponse a été coupée (limite de longueur atteinte). Augmente le contexte dans les réglages."
+    yield {"type": "done", "document": _listing(new_doc), "info": info, "warning": warning}
+
+
+def _share_budget(sizes: list[int], budget: int) -> list[int]:
+    """Partage équitable du contexte entre plusieurs cours : les petits gardent tout leur texte, le reste
+    est réparti à parts égales entre les plus longs."""
+    shares = [0] * len(sizes)
+    remaining = budget
+    order = sorted(range(len(sizes)), key=lambda i: sizes[i])
+    for k, i in enumerate(order):
+        shares[i] = min(sizes[i], remaining // (len(sizes) - k))
+        remaining -= shares[i]
+    return shares
+
+
+def _generate_multi(doc: dict[str, Any], spec: dict[str, Any], body: GenerateIn) -> StreamingResponse:
+    """Un seul document (fiche, résumé, QCM…) à partir de plusieurs CM de la même matière."""
+    if body.task in prompts.MULTI_EXCLUDED:
+        raise HTTPException(400, "Cette tâche porte sur un seul document : choisis « Ce document ».")
+    subject_id = doc.get("subject_id")
+    subject = next((s for s in db.list_subjects() if s["id"] == subject_id), None)
+    if not subject:
+        raise HTTPException(400, "Ce document n'est rangé dans aucune matière.")
+    ids = list(dict.fromkeys(body.document_ids or []))
+    docs = [d for d in (db.get_document(i) for i in ids) if d]
+    if any(d["subject_id"] != subject_id for d in docs):
+        raise HTTPException(400, "Les documents choisis doivent appartenir à la même matière.")
+    docs = [d for d in docs if (d["content"] or "").strip()]
+    if len(docs) < 2:
+        raise HTTPException(400, "Choisis au moins deux CM qui ont du contenu.")
+
+    siblings = db.list_documents(subject_id)
+    all_cm = {d["id"] for d in siblings if d["kind"] == "cours"}
+    every = all_cm <= {d["id"] for d in docs}
+    # Fiche de révision déjà générée pour un CM (la plus récente) : réutilisée si le CM est trop long.
+    fiches: dict[int, dict[str, Any]] = {}
+    for d in sorted(siblings, key=lambda x: x["updated_at"]):
+        if d["kind"] == "fiche" and d["parent_id"]:
+            fiches[d["parent_id"]] = d
+
+    settings = db.get_settings()
+    reserve = spec["reserve"] + prompts.MULTI_EXTRA_RESERVE.get(body.task, 0)
+    n = len(docs)
+    scope = "tous les CM" if every else f"{n} CM"
+
+    async def run() -> AsyncIterator[dict[str, Any]]:
+        yield {"type": "status", "message": f"Préparation des {n} CM…"}
+        budget = llm.input_budget_chars(settings, reserve) - 100 * n  # balises <cours …> autour de chaque CM
+        shares = _share_budget([len(d["content"]) for d in docs], budget)
+        sources: list[tuple[str, str]] = []
+        shortened = 0
+        for d, share in zip(docs, shares):
+            text = d["content"]
+            if len(text) > share:
+                shortened += 1
+                fiche = fiches.get(d["id"])
+                fiche_text = (db.get_document(fiche["id"]) or {}).get("content", "") if fiche else ""
+                if fiche_text.strip() and len(fiche_text) <= share:
+                    yield {"type": "status", "message": f"« {d['title']} » est long : sa fiche de révision est utilisée."}
+                    text = fiche_text
+                else:
+                    async for ev in llm.fit_source(text, settings, reserve, budget=share, label=d["title"]):
+                        if ev["type"] == "source":
+                            text = ev["text"]
+                        else:
+                            yield ev
+            sources.append((d["title"], text))
+        what = spec["label"].lower()
+        yield {"type": "status", "message": f"Génération ({what} sur {n} CM)…"}
+
+        messages = [
+            {"role": "system", "content": prompts.SYSTEM_TUTOR},
+            {
+                "role": "user",
+                "content": prompts.multi_user_prompt(
+                    body.task, subject["name"], sources, body.count, body.difficulty, body.instructions.strip()
+                ),
+            },
+        ]
+        header = f"> 📚 Couvre {n} CM : " + " · ".join(f"**CM {i}** {d['title']}" for i, d in enumerate(docs, start=1))
+        if shortened:
+            header += f"  \n> *({shortened} CM trop long(s) pour le modèle ont été résumés au préalable.)*"
+        async for ev in _write_result(
+            body, spec, messages, settings, reserve,
+            title=f"{spec['label']} — {subject['name']} ({scope})",
+            short_title=f"{subject['name']} ({scope})",
+            subject_id=subject_id,
+            parent_id=None,
+            sources=[d["id"] for d in docs],
+            header=header,
+        ):
+            yield ev
 
     return _ndjson(run())
 

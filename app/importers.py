@@ -23,14 +23,25 @@ class ImportResult:
 _TD_RE = re.compile(r"(?:^|[^a-z])td(?![a-z])|travaux[\s_-]*dirig", re.IGNORECASE)
 _TP_RE = re.compile(r"(?:^|[^a-z])tp(?![a-z])|travaux[\s_-]*pratiq", re.IGNORECASE)
 _CR_RE = re.compile(r"compte[\s_-]*rendu|(?:^|[^a-z])(?:cr|rapport)(?![a-z])", re.IGNORECASE)
+# Contrôle d'une année précédente : « Partiel 2024 », « Examen_S7 », « DS1 », « CC2 », « Annale »…
+# (« Contrôle de flux » ou « contrôle d'accès » sont des titres de cours, pas des contrôles.)
+_ANNALE_RE = re.compile(
+    r"annale|examen|partiel|rattrapage|midterm|(?:^|[^a-z])exams?(?![a-z])"
+    r"|contr[oô]le(?![\s_-]*(?:d[eu]s?(?![a-z])|d['’]))"
+    r"|(?:^|[^a-z])(?:ds|dst|cc)\d*(?![a-z])",
+    re.IGNORECASE,
+)
 
 
 def guess_kind(filename: str) -> str:
     """Devine le type d'après le nom du fichier : « TD2_routage.pdf » → td, « TP-Docker.pptx » → tp,
-    « Compte-rendu TP3.pdf » → rendu, sinon cours (CM)."""
+    « Compte-rendu TP3.pdf » → rendu, « Partiel 2024.pdf » → annale (contrôle d'une année précédente),
+    sinon cours (CM)."""
     stem = Path(filename).stem
     if _CR_RE.search(stem):
         return "rendu"
+    if _ANNALE_RE.search(stem):
+        return "annale"
     if _TD_RE.search(stem):
         return "td"
     if _TP_RE.search(stem):

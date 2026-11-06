@@ -281,6 +281,10 @@ textarea { resize: vertical; }
 .doc-item.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 .doc-item .ico { flex: none; width: 18px; text-align: center; }
 .doc-item .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.doc-item .multi {
+  flex: none; margin-left: auto; font-size: 11px; font-weight: 600; color: var(--muted);
+  background: var(--panel-2); border-radius: 999px; padding: 1px 6px;
+}
 .doc-item.child { padding-left: 26px; font-size: 13px; }
 .doc-item.child .name { color: var(--muted); }
 .doc-item.child.active .name { color: var(--accent); }
@@ -456,6 +460,16 @@ textarea { resize: vertical; }
 .task.active { border-color: var(--accent); background: var(--accent-soft); box-shadow: 0 0 0 1px var(--accent) inset; }
 .task .t { font-weight: 600; font-size: 13px; }
 .task .d { color: var(--muted); font-size: 11.5px; line-height: 1.3; }
+.scope-row { display: flex; flex-direction: column; gap: 6px; }
+.scope-row .seg { display: flex; }
+.scope-row .seg button { flex: 1; }
+.scope-pick summary { cursor: pointer; font-size: 12.5px; color: var(--muted); }
+.scope-list {
+  display: flex; flex-direction: column; gap: 5px; margin-top: 6px; max-height: 190px; overflow: auto;
+  padding: 7px 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); font-size: 12.5px;
+}
+.scope-list .check { min-width: 0; }
+.scope-list .check span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ai-options { display: flex; flex-direction: column; gap: 8px; }
 .ai-options .row label { width: 72px; color: var(--muted); font-size: 12.5px; }
 .ai-options input[type=number] { width: 80px; flex: none !important; }

@@ -5,12 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>DeepLearning — atelier de révision</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧠</text></svg>">
-  <link rel="stylesheet" href="/static/style.css?v=7">
+  <link rel="stylesheet" href="/static/style.css?v=9">
   <!-- KaTeX (formules) : optionnel, chargé depuis un CDN quand Internet est disponible. -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
-  <script defer src="/static/app.js?v=7"></script>
+  <script defer src="/static/app.js?v=9"></script>
 </head>
 <body>
 <div id="app" class="layout">
@@ -112,6 +112,7 @@
           <option value="cours">📘 CM</option>
           <option value="td">📗 TD</option>
           <option value="tp">🔧 TP</option>
+          <option value="annale">📜 Contrôle année précédente</option>
           <option value="rendu">📑 Compte-rendu</option>
           <option value="note">📝 Note</option>
         </select>
@@ -284,6 +285,16 @@
 
     <!-- Générer -->
     <div id="ai-generate" class="ai-body">
+      <div id="opt-scope-row" class="scope-row" hidden>
+        <div class="seg small" id="opt-scope" title="Sur quoi l'IA travaille">
+          <button data-scope="doc" class="active">📄 Ce CM</button>
+          <button data-scope="all">📚 Tous les CM <span id="scope-count"></span></button>
+        </div>
+        <details id="scope-pick" class="scope-pick" hidden>
+          <summary id="scope-summary"></summary>
+          <div id="scope-list" class="scope-list"></div>
+        </details>
+      </div>
       <div id="task-grid" class="task-grid"></div>
       <div class="ai-options">
         <div class="row" id="opt-count-row">

@@ -219,9 +219,17 @@ def split_text(text: str, max_chars: int) -> list[str]:
     return chunks
 
 
-async def fit_source(text: str, settings: dict[str, Any], reserve_tokens: int) -> AsyncIterator[dict[str, Any]]:
-    """Condense le cours s'il est trop long pour le contexte. Émet des statuts puis {type: source}."""
-    budget = input_budget_chars(settings, reserve_tokens)
+async def fit_source(
+    text: str,
+    settings: dict[str, Any],
+    reserve_tokens: int,
+    budget: int | None = None,
+    label: str | None = None,
+) -> AsyncIterator[dict[str, Any]]:
+    """Condense le cours s'il est trop long pour le contexte (ou pour `budget` caractères, quand plusieurs
+    cours se partagent le contexte). Émet des statuts puis {type: source}."""
+    budget = budget or input_budget_chars(settings, reserve_tokens)
+    what = f"« {label} »" if label else "Cours long"
     if len(text) <= budget:
         yield {"type": "source", "text": text, "condensed": False}
         return
@@ -230,7 +238,7 @@ async def fit_source(text: str, settings: dict[str, Any], reserve_tokens: int) -
     key = hashlib.sha256(f"{model}|{settings.get('num_ctx')}|{budget}|{text}".encode("utf-8")).hexdigest()
     cached = db.cache_get(key)
     if cached:
-        yield {"type": "status", "message": "Version condensée du cours récupérée depuis le cache."}
+        yield {"type": "status", "message": f"{what} : version condensée récupérée depuis le cache."}
         yield {"type": "source", "text": cached, "condensed": True}
         return
 
@@ -247,7 +255,7 @@ async def fit_source(text: str, settings: dict[str, Any], reserve_tokens: int) -
         for i, chunk in enumerate(chunks, start=1):
             yield {
                 "type": "status",
-                "message": f"Cours long : lecture et condensation de la partie {i}/{len(chunks)}"
+                "message": f"{what} : lecture et condensation de la partie {i}/{len(chunks)}"
                 + (f" (passe {round_no})" if round_no > 1 else "")
                 + "…",
             }

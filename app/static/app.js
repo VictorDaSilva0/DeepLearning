@@ -202,6 +202,7 @@ const KINDS = {
   cours: { icon: '📘', label: 'Cours (CM)' },
   td: { icon: '📗', label: 'TD' },
   tp: { icon: '🔧', label: 'TP' },
+  annale: { icon: '📜', label: 'Contrôle année précédente' },
   corrige: { icon: '🔑', label: 'Corrigé' },
   rendu: { icon: '📑', label: 'Compte-rendu' },
   relecture: { icon: '🧐', label: 'Relecture' },
@@ -227,24 +228,35 @@ const TASKS = [
   { id: 'explication', icon: '💡', label: 'Explication simple', desc: 'Analogies, exemples concrets' },
   { id: 'glossaire', icon: '📖', label: 'Glossaire', desc: 'Tous les termes techniques' },
   { id: 'plan', icon: '🗺️', label: 'Plan / carte mentale', desc: "L'organisation des idées" },
-  { id: 'corrige', icon: '🔑', label: 'Corrigé détaillé', desc: 'Résout les exercices du TD / TP' },
+  { id: 'corrige', icon: '🔑', label: 'Corrigé détaillé', desc: 'Résout les exercices du TD / TP / contrôle' },
+  { id: 'similaire', icon: '🎯', label: "Sujet d'entraînement", desc: 'Nouveau contrôle du même type + corrigé', only: ['annale'] },
   { id: 'relecture', icon: '🧐', label: 'Relire mon compte-rendu', desc: 'Couverture du sujet, erreurs, conseils', only: ['rendu'] },
   { id: 'custom', icon: '💬', label: 'Demande libre', desc: 'Ta propre consigne' },
 ];
+/** Tâches qui portent sur un seul document (pas proposées sur « Tous les CM »). */
+const MULTI_EXCLUDED = ['corrige', 'relecture', 'similaire'];
+/** Tâche proposée d'emblée en ouvrant ce type de document. */
+const PREFERRED_TASK = { rendu: 'relecture', annale: 'corrige' };
 
 /** Catégories des documents de cours importés (le type « cours » correspond au CM). */
 const CATEGORIES = [
   { kind: 'cours', short: 'CM', label: 'Cours magistraux' },
   { kind: 'td', short: 'TD', label: 'Travaux dirigés' },
   { kind: 'tp', short: 'TP', label: 'Travaux pratiques' },
+  { kind: 'annale', short: 'Contrôle', label: 'Contrôles des années précédentes', group: 'Contrôles années préc.' },
   { kind: 'rendu', short: 'CR', label: 'Comptes-rendus' },
 ];
 const SOURCE_KINDS = CATEGORIES.map((c) => c.kind);
 
-/** Même détection que le serveur : « TD2_routage.pdf » → td, « TP-Docker.pptx » → tp, « Compte-rendu… » → CR, sinon CM. */
+/** Même détection que le serveur : « TD2_routage.pdf » → td, « TP-Docker.pptx » → tp, « Compte-rendu… » → CR,
+ *  « Partiel 2024 », « DS1 », « Examen… » → contrôle d'une année précédente, sinon CM. */
 function guessKind(filename) {
   const stem = filename.replace(/\.[^.]+$/, '');
   if (/compte[\s_-]*rendu|(?:^|[^a-z])(?:cr|rapport)(?![a-z])/i.test(stem)) return 'rendu';
+  if (
+    /annale|examen|partiel|rattrapage|midterm|(?:^|[^a-z])exams?(?![a-z])|contr[oô]le(?![\s_-]*(?:d[eu]s?(?![a-z])|d['’]))|(?:^|[^a-z])(?:ds|dst|cc)\d*(?![a-z])/i.test(stem)
+  )
+    return 'annale';
   if (/(?:^|[^a-z])td(?![a-z])|travaux[\s_-]*dirig/i.test(stem)) return 'td';
   if (/(?:^|[^a-z])tp(?![a-z])|travaux[\s_-]*pratiq/i.test(stem)) return 'tp';
   return 'cours';
@@ -280,6 +292,9 @@ const state = {
   aiOpen: window.innerWidth < 1180 ? false : store.get('aiOpen', true),
   aiTab: 'generate',
   task: store.get('task', 'fiche'),
+  scope: 'doc', // 'doc' = le CM ouvert, 'all' = tous les CM de la matière
+  scopeOff: new Set(), // CM décochés dans la liste
+  scopeSubject: undefined,
   difficulty: 'moyen',
   collapsed: store.get('collapsed', {}),
   chats: {},
@@ -481,10 +496,15 @@ function subjectGroup(g, docs, byId, exam) {
     list.append(docItem(d, depth));
     childrenOf(d.id).forEach((c) => add(c, depth + 1));
   };
-  // Sous-groupes CM / TD / TP (les documents générés restent rangés sous leur document d'origine).
+  // Sous-groupes CM / TD / TP (les documents générés restent rangés sous leur document d'origine ;
+  // ceux faits à partir de plusieurs CM — fiche de toute la matière… — en tête des CM).
+  const multi = roots.filter((d) => d.sources_count && !SOURCE_KINDS.includes(d.kind));
   const groups = [
-    ...CATEGORIES.map((c) => ({ ...c, docs: roots.filter((d) => d.kind === c.kind) })),
-    { kind: 'autre', short: 'Notes & fiches', label: 'Notes et documents', docs: roots.filter((d) => !SOURCE_KINDS.includes(d.kind)) },
+    ...CATEGORIES.map((c) => ({ ...c, docs: [...(c.kind === 'cours' ? multi : []), ...roots.filter((d) => d.kind === c.kind)] })),
+    {
+      kind: 'autre', short: 'Notes & fiches', label: 'Notes et documents',
+      docs: roots.filter((d) => !SOURCE_KINDS.includes(d.kind) && !d.sources_count),
+    },
   ];
   const labelled = groups.some((grp) => grp.kind !== 'autre' && grp.docs.length);
   for (const grp of groups) {
@@ -493,7 +513,8 @@ function subjectGroup(g, docs, byId, exam) {
       const lbl = document.createElement('div');
       lbl.className = 'cat-label';
       lbl.title = grp.label;
-      lbl.innerHTML = `<span>${esc(grp.short)}</span><span class="n">${grp.docs.length}</span>`;
+      const n = grp.kind === 'autre' ? grp.docs.length : grp.docs.filter((d) => d.kind === grp.kind).length;
+      lbl.innerHTML = `<span>${esc(grp.group || grp.short)}</span><span class="n">${n}</span>`;
       list.append(lbl);
     }
     grp.docs.forEach((d) => add(d, 0));
@@ -507,7 +528,10 @@ function docItem(d, depth) {
   b.style.paddingLeft = `${8 + Math.min(depth, 4) * 16}px`;
   b.dataset.id = d.id;
   b.title = d.title;
-  b.innerHTML = `<span class="ico">${KINDS[d.kind]?.icon || '📄'}</span><span class="name">${esc(d.title)}</span>`;
+  if (d.sources_count) b.title += ` — à partir de ${d.sources_count} CM`;
+  b.innerHTML = `<span class="ico">${KINDS[d.kind]?.icon || '📄'}</span><span class="name">${esc(d.title)}</span>${
+    d.sources_count ? `<span class="multi" title="Fait à partir de ${d.sources_count} CM">📚 ${d.sources_count}</span>` : ''
+  }`;
   b.onclick = () => go(`#doc/${d.id}`);
   return b;
 }
@@ -550,7 +574,9 @@ function closeMenus() {
 }
 
 function subjectMenu(anchor, subject) {
+  const nCM = subjectCMs(subject.id).length;
   showMenu(anchor, [
+    ...(nCM >= 2 ? [{ label: `📚 Fiche de révision de tous les CM (${nCM})`, run: () => openSubjectSheet(subject.id) }] : []),
     { label: '⬆ Importer un cours ici', run: () => openImport([], subject.id) },
     { label: '＋ Nouvelle note ici', run: () => newNote(subject.id) },
     { label: '📅 Ajouter un examen', run: () => openEventDialog(null, { subject_id: subject.id }) },
@@ -1449,12 +1475,68 @@ function refreshAIPanel() {
   $('#ai-chat').hidden = tab !== 'chat';
   $('#ai-nodoc').hidden = tab === 'chat' || hasDoc;
   if (tab === 'chat') renderChat();
-  if (hasDoc) renderTaskGrid();
+  if (hasDoc) {
+    renderScope();
+    renderTaskGrid();
+  }
   updateSelectionUI();
 }
 
+// Portée : le CM ouvert, ou tous les CM de la matière (→ un seul document pour toute la matière).
+/** Les CM d'une matière, dans l'ordre des titres (« Chapitre 2 » avant « Chapitre 10 »). */
+function subjectCMs(subjectId) {
+  if (subjectId == null) return [];
+  return state.docs
+    .filter((d) => d.subject_id === subjectId && d.kind === 'cours')
+    .sort((a, b) => a.title.localeCompare(b.title, 'fr', { numeric: true }));
+}
+
+const multiScope = () => !$('#opt-scope-row').hidden && state.scope === 'all';
+const chosenCMs = () => subjectCMs(state.current?.subject_id).filter((d) => !state.scopeOff.has(d.id));
+
+function renderScope() {
+  const doc = state.current;
+  const cms = doc?.kind === 'cours' ? subjectCMs(doc.subject_id) : [];
+  const row = $('#opt-scope-row');
+  row.hidden = cms.length < 2;
+  if (!row.hidden && state.scopeSubject !== doc.subject_id) {
+    // Choix mémorisé par matière ; la liste des CM exclus repart de zéro.
+    state.scopeSubject = doc.subject_id;
+    state.scope = store.get('genScope.' + doc.subject_id, 'doc');
+    state.scopeOff = new Set();
+  }
+  const all = multiScope();
+  $('#btn-generate').textContent = all ? `✨ Générer sur ${chosenCMs().length} CM` : '✨ Générer';
+  if (row.hidden) return;
+  $$('#opt-scope button').forEach((b) => b.classList.toggle('active', b.dataset.scope === state.scope));
+  $('#scope-count').textContent = `(${cms.length})`;
+  $('#scope-pick').hidden = !all;
+  const n = chosenCMs().length;
+  $('#scope-summary').textContent = n === cms.length ? `Les ${n} CM sont inclus — choisir…` : `${n} CM sur ${cms.length} inclus — choisir…`;
+  $('#scope-list').innerHTML = cms
+    .map((d) => `<label class="check" title="${esc(d.title)}"><input type="checkbox" data-cm="${d.id}" ${state.scopeOff.has(d.id) ? '' : 'checked'}> <span>${esc(d.title)}</span></label>`)
+    .join('');
+}
+
+/** Depuis la bibliothèque : ouvre le premier CM avec « Fiche de révision » sur tous les CM. */
+function openSubjectSheet(subjectId) {
+  const first = subjectCMs(subjectId)[0];
+  if (!first) return;
+  state.scopeSubject = subjectId;
+  state.scope = 'all';
+  state.scopeOff = new Set();
+  store.set('genScope.' + subjectId, 'all');
+  state.task = 'fiche';
+  store.set('task', 'fiche');
+  state.aiOpen = true;
+  applyAIOpen();
+  setAITab('generate');
+  go(`#doc/${first.id}`);
+}
+
 /** Tâches proposées pour le document ouvert (la relecture n'a de sens que pour un compte-rendu). */
-const visibleTasks = () => TASKS.filter((t) => !t.only || t.only.includes(state.current?.kind));
+const visibleTasks = () =>
+  TASKS.filter((t) => (!t.only || t.only.includes(state.current?.kind)) && !(multiScope() && MULTI_EXCLUDED.includes(t.id)));
 
 function renderTaskGrid() {
   const tasks = visibleTasks();
@@ -1462,9 +1544,10 @@ function renderTaskGrid() {
     .map((t) => `<button class="task" data-task="${t.id}"><span class="t">${t.icon} ${esc(t.label)}</span><span class="d">${esc(t.desc)}</span></button>`)
     .join('');
   if ($('#task-grid').innerHTML !== html) $('#task-grid').innerHTML = html;
-  // Sur un compte-rendu, on propose directement la relecture.
-  const preferred = state.current?.kind === 'rendu' && state.lastKind !== 'rendu' ? 'relecture' : state.task;
-  state.lastKind = state.current?.kind;
+  // Sur un compte-rendu, on propose directement la relecture ; sur un ancien contrôle, le corrigé.
+  const kind = state.current?.kind;
+  const preferred = PREFERRED_TASK[kind] && state.lastKind !== kind ? PREFERRED_TASK[kind] : state.task;
+  state.lastKind = kind;
   selectTask(tasks.some((t) => t.id === preferred) ? preferred : tasks.some((t) => t.id === state.task) ? state.task : tasks[0].id);
 }
 
@@ -1504,7 +1587,7 @@ function selectionInfo() {
 
 function updateSelectionUI() {
   const info = selectionInfo();
-  $('#opt-selection-row').hidden = !info;
+  $('#opt-selection-row').hidden = !info || multiScope();
   if (!info) $('#opt-selection').checked = false;
   $('#sel-size').textContent = info ? info.text.length.toLocaleString('fr-FR') : '0';
   $('#tools-hint').textContent = info
@@ -1527,8 +1610,14 @@ async function generate() {
     $('#opt-instructions').focus();
     return;
   }
+  const documentIds = multiScope() ? chosenCMs().map((d) => d.id) : null;
+  if (documentIds && documentIds.length < 2) {
+    toast('Coche au moins deux CM (ou choisis « Ce CM »).');
+    $('#scope-pick').open = true;
+    return;
+  }
   await flushSave();
-  const useSel = $('#opt-selection').checked && !$('#opt-selection-row').hidden;
+  const useSel = !documentIds && $('#opt-selection').checked && !$('#opt-selection-row').hidden;
   const selection = useSel ? selectionInfo()?.text || null : null;
   const count = Math.max(1, Math.min(60, +$('#opt-count').value || task.count || 10));
   if (task.count) store.set('count.' + task.id, count);
@@ -1555,7 +1644,7 @@ async function generate() {
   try {
     await streamNDJSON(
       '/api/generate',
-      { document_id: doc.id, task: task.id, count, difficulty: state.difficulty, instructions, selection },
+      { document_id: doc.id, task: task.id, count, difficulty: state.difficulty, instructions, selection, document_ids: documentIds },
       (ev) => {
         if (ev.type === 'status') setGenStatus(ev.message);
         else if (ev.type === 'thinking') {
@@ -2752,6 +2841,20 @@ function bindEvents() {
   });
   $('#task-grid').addEventListener('dblclick', (e) => {
     if (e.target.closest('[data-task]') && !state.controllers.gen) generate();
+  });
+  $('#opt-scope').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-scope]');
+    if (!b || !state.current) return;
+    state.scope = b.dataset.scope;
+    store.set('genScope.' + state.current.subject_id, state.scope);
+    refreshAIPanel();
+  });
+  $('#scope-list').addEventListener('change', (e) => {
+    const id = +e.target.dataset.cm;
+    if (!id) return;
+    if (e.target.checked) state.scopeOff.delete(id);
+    else state.scopeOff.add(id);
+    renderScope();
   });
   $('#opt-difficulty').addEventListener('click', (e) => {
     const b = e.target.closest('[data-v]');

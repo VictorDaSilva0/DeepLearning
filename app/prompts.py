@@ -171,13 +171,31 @@ TASKS: dict[str, dict] = {
         "kind": "corrige",
         "reserve": 6000,
         "prompt": (
-            "Ce document est un sujet d'exercices (TD ou TP). Rédige le corrigé détaillé de chaque exercice et de "
-            "chaque question, dans l'ordre du sujet, avec une section ## Exercice N par exercice. Pour chaque "
-            "question : rappelle en une ligne ce qui est demandé, puis donne la démarche étape par étape "
-            "(justifications, calculs, schémas décrits, commandes ou code si nécessaire) et le résultat final en "
-            "**gras**. Si une question dépend d'une information absente du sujet (fichier, figure, valeur), "
-            "dis-le et pose une hypothèse raisonnable. Si tu n'es pas sûr d'un résultat, signale-le clairement. "
+            "Ce document est un sujet d'exercices (TD, TP ou contrôle). Rédige le corrigé détaillé de chaque "
+            "exercice et de chaque question, dans l'ordre du sujet, avec une section ## Exercice N par exercice. "
+            "Pour chaque question : rappelle en une ligne ce qui est demandé (avec ses points si le sujet donne "
+            "un barème), puis donne la démarche étape par étape (justifications, calculs, schémas décrits, "
+            "commandes ou code si nécessaire) et le résultat final en **gras**. Si une question dépend d'une "
+            "information absente du sujet (fichier, figure, valeur), dis-le et pose une hypothèse raisonnable. "
+            "Si tu n'es pas sûr d'un résultat, signale-le clairement. "
             "Termine par une section ## Points de méthode à retenir."
+        ),
+    },
+    "similaire": {
+        "label": "Sujet d'entraînement",
+        "kind": "exercices",
+        "reserve": 6500,
+        "prompt": (
+            "Ce document est le sujet d'un contrôle d'une année précédente. Rédige un NOUVEAU sujet "
+            "d'entraînement du même type : même format (exercices, questions de cours, QCM… dans les mêmes "
+            "proportions), même durée et même barème s'ils sont indiqués, même difficulté et mêmes notions, mais "
+            "avec des questions, des valeurs, des cas et des exemples différents — on ne doit pas pouvoir "
+            "recopier le corrigé de l'ancien sujet.\n"
+            "Commence par # Sujet d'entraînement, puis la durée et les documents autorisés si l'original les "
+            "indique, puis les exercices (## Exercice N — <thème> (x points)).\n"
+            "Ne donne PAS les solutions sous les énoncés : après une ligne ---, ajoute une section # Corrigé "
+            "avec, pour chaque question, la réponse détaillée, le résultat en **gras** et la répartition des "
+            "points."
         ),
     },
     "relecture": {
@@ -267,6 +285,7 @@ DOC_LABELS = {
     "cours": "le cours magistral (CM)",
     "td": "le sujet de TD (travaux dirigés)",
     "tp": "le sujet de TP (travaux pratiques)",
+    "annale": "le sujet de contrôle d'une année précédente",
     "rendu": "le compte-rendu rédigé par l'étudiant",
 }
 
@@ -298,6 +317,74 @@ def task_user_prompt(
     if subject:
         intro = f"Voici le sujet « {subject[0]} » :\n\n<sujet>\n{subject[1]}\n</sujet>\n\n"
     return f"{intro}Voici {label} « {title} » :\n\n<cours>\n{source}\n</cours>\n\n{body}{extra}"
+
+
+# --------------------------------------------------------------------------- plusieurs CM à la fois
+
+# Tâches qui n'ont pas de sens sur un ensemble de CM (elles portent sur un TD / TP / compte-rendu).
+MULTI_EXCLUDED = {"corrige", "relecture", "similaire"}
+# Tokens de réponse en plus : un document qui couvre toute la matière est plus long.
+MULTI_EXTRA_RESERVE = {"fiche": 2500, "resume": 1500, "glossaire": 1500, "plan": 1000}
+
+MULTI_PROMPTS = {
+    "fiche": (
+        "Rédige UNE SEULE fiche de révision qui couvre l'intégralité de ces CM (et non une fiche par CM). "
+        "Structure attendue :\n"
+        "# Fiche — {subject}\n"
+        "## L'essentiel en 10 lignes (vue d'ensemble de la matière)\n"
+        "## Plan de la matière (une puce par CM : « **CM n — titre** : idée principale »)\n"
+        "## Notions clés (une sous-partie ### par grande notion ; regroupe ce qui va ensemble même si c'est "
+        "réparti sur plusieurs CM, et indique la provenance entre parenthèses, ex. (CM 2))\n"
+        "## Définitions (liste « **terme** : définition », sans doublons)\n"
+        "## Formules, commandes, règles et méthodes (si les cours en contiennent)\n"
+        "## Exemples types\n"
+        "## Liens entre les CM (ce qui s'appuie sur quoi)\n"
+        "## Pièges fréquents et points d'attention\n"
+        "## Questions pour s'auto-évaluer (8 questions qui couvrent tous les CM, sans les réponses)\n"
+        "Sois synthétique, privilégie les listes à puces, et n'oublie aucun CM."
+    ),
+    "resume": (
+        "Fais UN SEUL résumé structuré de l'ensemble de ces CM : un titre (# Résumé — {subject}), puis une "
+        "section ## par CM, résumée en un court paragraphe suivi de 2 à 4 puces sur les points essentiels. "
+        "Termine par une section ## À retenir absolument sur toute la matière (8 puces maximum)."
+    ),
+}
+
+MULTI_NOTE = (
+    "Important : considère l'ensemble de ces CM comme un seul cours (toute la matière). Répartis ton travail "
+    "sur tous les CM sans en oublier, et produis un document unique."
+)
+
+
+def multi_user_prompt(
+    task: str,
+    subject: str,
+    sources: list[tuple[str, str]],
+    count: int,
+    difficulty: str,
+    instructions: str,
+) -> str:
+    """sources = [(titre du CM, texte — complet, condensé ou fiche existante)], dans l'ordre des CM."""
+    blocks = "\n\n".join(
+        f'<cours numero="{n}" titre="{title.replace(chr(34), chr(39))}">\n{text}\n</cours>'
+        for n, (title, text) in enumerate(sources, start=1)
+    )
+    if task in MULTI_PROMPTS:
+        body = MULTI_PROMPTS[task].format(subject=subject)
+    else:
+        body = TASKS[task]["prompt"].format(
+            count=count,
+            difficulty=DIFFICULTY_LABELS.get(difficulty, difficulty),
+            instructions=instructions or "Aide-moi à réviser cette matière.",
+            subject_hint="",
+            subject_only=" (déduis-les du document lui-même)",
+        )
+        body = f"{body}\n\n{MULTI_NOTE}"
+    extra = f"\n\nConsignes supplémentaires de l'étudiant : {instructions}" if instructions and task != "custom" else ""
+    return (
+        f"Voici les {len(sources)} cours magistraux (CM) de la matière « {subject} », dans l'ordre :\n\n"
+        f"{blocks}\n\n{body}{extra}"
+    )
 
 
 def condense_prompt(part: int, total: int, words: int, chunk: str) -> str:
