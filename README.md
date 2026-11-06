@@ -97,7 +97,7 @@ Une adresse DuckDNS (`duckdns.org`) ne marche pas avec un tunnel : Cloudflare n'
 | **IA — Discuter** | Chat avec le cours (les passages pertinents sont retrouvés automatiquement pour les cours longs), enregistrable comme note. |
 | **IA — Outils texte** | Sur la sélection : corriger, reformuler, simplifier, développer, résumer, structurer, exemples, traduire, ou consigne libre ; puis *Remplacer* / *Insérer après* (annulable avec Ctrl+Z). |
 | **QCM** | Quiz interactif noté (raccourcis 1–4 / Entrée), explications, historique des scores, conversion des erreurs en flashcards. |
-| **Téléphone** | Interface adaptée aux petits écrans : barre du haut, bibliothèque en tiroir (☰), assistant IA en plein écran, cours en lecture (✎ pour éditer), QCM, flashcards et calendrier compact. On peut l'ajouter à l'écran d'accueil (« Ajouter à l'écran d'accueil » dans le navigateur). |
+| **Téléphone** | Interface adaptée aux petits écrans : barre du haut, bibliothèque en tiroir (☰), assistant IA en plein écran, cours en lecture (✎ pour éditer) qui ne défilent que de haut en bas (texte, tableaux, code et formules tiennent dans la largeur), QCM, flashcards et calendrier compact. On peut l'ajouter à l'écran d'accueil (« Ajouter à l'écran d'accueil » dans le navigateur). |
 | **Flashcards** | Répétition espacée (type Anki : À revoir / Difficile / Bien / Facile), révision du jour par matière, édition des cartes, entraînement libre. |
 
 ### Cours longs

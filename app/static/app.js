@@ -1064,6 +1064,49 @@ function setNav(open) {
   $('#app').classList.toggle('nav-open', !!open && isPhone());
 }
 
+/** Téléphone : formules et tableaux trop larges sont réduits pour tenir dans l'écran (pas de défilement latéral). */
+function fitToWidth(el) {
+  const width = (box) => {
+    const cs = getComputedStyle(box);
+    return box.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+  };
+  const scale = (ratio) => Math.max(ratio * 0.97, 0.45);
+  // Formules centrées ($$ … $$) : une seule ligne, jamais coupée.
+  for (const f of el.querySelectorAll('.katex-display')) {
+    f.style.fontSize = '';
+    if (!isPhone() || !f.clientWidth) continue;
+    const ratio = f.clientWidth / f.scrollWidth;
+    if (ratio < 1) f.style.fontSize = scale(ratio) * 100 + '%';
+  }
+  // Formules dans le texte : KaTeX les coupe aux « = » et « + », mais un morceau (une fraction…) peut rester trop large.
+  const avail = isPhone() ? width(el) : 0;
+  for (const k of el.querySelectorAll('.katex')) {
+    if (k.closest('.katex-display')) continue;
+    k.style.fontSize = '';
+    if (avail <= 0) continue;
+    const box = k.parentElement.closest('p, li, td, th, blockquote, dd, h1, h2, h3, h4, h5, h6') || el;
+    const room = Math.min(avail, width(box) || avail);
+    const widest = Math.max(0, ...[...k.querySelectorAll('.katex-html > .base')].map((b) => b.getBoundingClientRect().width));
+    if (widest > room) k.style.fontSize = scale(room / widest) * 1.21 + 'em'; // KaTeX : 1.21em par défaut
+  }
+  // Tableaux : coupés aux syllabes ; trop larges quand même → police réduite, et en dernier recours coupure n'importe où.
+  for (const t of el.querySelectorAll('table')) {
+    t.style.fontSize = '';
+    t.classList.remove('squeeze');
+    const w = t.getBoundingClientRect().width;
+    if (avail <= 0 || w <= avail + 1) continue;
+    const size = parseFloat(getComputedStyle(t).fontSize);
+    t.style.fontSize = Math.max(size * (avail / w) * 0.97, 10.5) + 'px';
+    if (t.getBoundingClientRect().width > avail + 1) t.classList.add('squeeze');
+  }
+}
+
+// iPhone/iPad : pas de zoom automatique quand on touche un champ (le zoom à deux doigts reste possible).
+if (/iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)) {
+  const vp = document.querySelector('meta[name=viewport]');
+  if (vp && !/maximum-scale/.test(vp.content)) vp.content += ', maximum-scale=1';
+}
+
 let previewSeq = 0;
 async function renderPreviewNow() {
   if (!state.current || $('#editor-split').classList.contains('mode-edit')) return;
@@ -1073,6 +1116,7 @@ async function renderPreviewNow() {
     if (mine !== previewSeq) return;
     preview.innerHTML = html || '<p class="muted">Aperçu vide.</p>';
     typeset(preview);
+    fitToWidth(preview);
   } catch {
     /* le serveur ne répond pas : on garde l'aperçu */
   }
@@ -3079,6 +3123,7 @@ function bindEvents() {
     setNav(false);
     applyMode(state.mode, false); // repasse en éditeur + aperçu en quittant le format téléphone
   });
+  window.addEventListener('resize', debounce(() => fitToWidth(preview), 200)); // rotation de l'écran
   $('#doc-tabs').addEventListener('click', (e) => {
     const b = e.target.closest('[data-dtab]');
     if (b) showDocTab(b.dataset.dtab);

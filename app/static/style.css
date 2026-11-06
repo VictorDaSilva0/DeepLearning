@@ -809,11 +809,22 @@ textarea { resize: vertical; }
   .toolbar::-webkit-scrollbar, .tabs::-webkit-scrollbar { display: none; }
   .toolbar button { flex: none; }
   .find-bar input:not([type=checkbox]) { width: auto; flex: 1 1 120px; }
-  #editor { padding: 14px; font-size: 15px; border-right: none; }
+  /* 16 px : en dessous, l'iPhone zoome en touchant le texte et la page se met à glisser sur le côté. */
+  #editor { padding: 14px; font-size: 16px; border-right: none; }
   #preview { padding: 16px 14px 60px; }
   .editor-split.mode-edit #editor, .editor-split.mode-preview #preview { padding-left: 14px; padding-right: 14px; }
   .markdown { font-size: 15.5px; }
   .markdown h1 { font-size: 1.5em; }
+
+  /* Défilement de haut en bas uniquement : tout revient à la ligne plutôt que de dépasser à droite. */
+  #editor, #preview { overflow-x: hidden; overscroll-behavior-x: none; }
+  #editor { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .markdown { overflow-wrap: anywhere; }                 /* longues URL, `code`, mots composés */
+  .markdown pre { white-space: pre-wrap; overflow-x: hidden; }
+  .markdown table { display: table; width: 100%; overflow: visible; font-size: 13.5px; }
+  .markdown th, .markdown td { padding: .35em .45em; overflow-wrap: break-word; hyphens: auto; } /* coupe aux syllabes : « Enso-leillement » */
+  .markdown table.squeeze th, .markdown table.squeeze td { overflow-wrap: anywhere; } /* dernier recours (fitToWidth) */
+  .markdown .arithmatex, .markdown .katex-display { overflow-x: clip; max-width: 100%; } /* formules réduites à la largeur (fitFormulas) */
   .statusbar { gap: 8px; padding: 5px 10px; flex-wrap: wrap; }
   #doc-source { display: none; }
   .original-bar { padding: 6px 10px; }
