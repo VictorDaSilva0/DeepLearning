@@ -103,9 +103,44 @@ a { color: var(--accent); }
     box-shadow: var(--shadow);
   }
 }
+/* Téléphone : bibliothèque en tiroir (☰), assistant IA en plein écran, barre du haut. */
+.mobile-bar, .drawer-backdrop, .only-phone { display: none; }
 @media (max-width: 760px) {
-  .layout, .layout.no-ai { grid-template-columns: 0 minmax(0, 1fr) 0; }
-  #sidebar { display: none; }
+  .layout, .layout.no-ai, .layout.wide, .layout.focus {
+    grid-template-columns: minmax(0, 1fr);
+    height: 100vh;
+    height: 100dvh; /* hauteur visible réelle (barres du navigateur) */
+  }
+  #sidebar, .layout.focus #sidebar {
+    display: flex; position: fixed; left: 0; top: 0; bottom: 0; z-index: 60; width: min(330px, 86vw);
+    transform: translateX(-102%); transition: transform .22s ease; box-shadow: var(--shadow); border-right: none;
+    padding-top: max(14px, env(safe-area-inset-top)); padding-bottom: max(8px, env(safe-area-inset-bottom));
+  }
+  .layout.nav-open #sidebar { transform: none; }
+  .drawer-backdrop {
+    display: block; position: fixed; inset: 0; z-index: 55; background: rgba(10, 12, 20, .45);
+    opacity: 0; pointer-events: none; transition: opacity .2s;
+  }
+  .layout.nav-open .drawer-backdrop { opacity: 1; pointer-events: auto; }
+  #ai-panel {
+    position: fixed; inset: 0; width: 100%; z-index: 58; border-left: none; box-shadow: none;
+    padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom);
+  }
+  .mobile-bar {
+    display: flex; align-items: center; gap: 4px; flex: none; background: var(--panel);
+    border-bottom: 1px solid var(--border); padding: 6px 8px; padding-top: max(6px, env(safe-area-inset-top));
+  }
+  .mobile-bar .icon-btn { width: 40px; height: 40px; font-size: 19px; color: var(--text); }
+  .m-brand { display: flex; align-items: center; gap: 8px; text-decoration: none; color: var(--text); font-size: 15px; }
+  .m-brand .brand-logo { width: 30px; height: 30px; font-size: 16px; border-radius: 8px; }
+  .m-review { position: relative; }
+  .m-review b {
+    position: absolute; top: 2px; right: 0; min-width: 17px; height: 17px; padding: 0 4px; border-radius: 999px;
+    background: var(--danger); color: #fff; font-size: 10.5px; line-height: 17px; text-align: center;
+  }
+  .layout.focus .mobile-bar { display: none; }
+  .only-desktop { display: none; }
+  .only-phone { display: inline; }
 }
 
 /* ======================================================================= boutons & champs */
@@ -383,8 +418,8 @@ textarea { resize: vertical; }
 .stat .lbl { color: var(--muted); font-size: 12.5px; }
 .stat.clickable { cursor: pointer; }
 .stat.clickable:hover { border-color: var(--accent); }
-.home-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-@media (max-width: 900px) { .home-cols { grid-template-columns: 1fr; } }
+.home-cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+@media (max-width: 900px) { .home-cols { grid-template-columns: minmax(0, 1fr); } }
 .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; margin-bottom: 12px; }
 .card h3 { margin: 0 0 8px; font-size: 14px; }
 .how ol { margin: 0; padding-left: 20px; color: var(--muted); }
@@ -647,7 +682,7 @@ textarea { resize: vertical; }
 .cal-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
 .cal-head h2 { margin: 0; font-size: 22px; }
 .cal-layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 14px; align-items: start; }
-@media (max-width: 1100px) { .cal-layout { grid-template-columns: 1fr; } }
+@media (max-width: 1100px) { .cal-layout { grid-template-columns: minmax(0, 1fr); } }
 .cal-main { padding: 12px; margin: 0; }
 .cal-nav { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
 .cal-nav b { font-size: 16px; min-width: 150px; text-align: center; text-transform: capitalize; }
@@ -725,3 +760,110 @@ textarea { resize: vertical; }
 .toast.error { background: var(--danger); color: white; }
 .toast button { border: none; background: rgba(255,255,255,.18); color: inherit; border-radius: 6px; padding: 3px 8px; cursor: pointer; font-weight: 600; }
 @keyframes pop { from { transform: translateY(8px); opacity: 0; } }
+
+/* ======================================================================= écrans tactiles */
+@media (pointer: coarse) {
+  .kbd-hint { display: none; } /* raccourcis clavier : inutiles sans clavier */
+  .icon-btn { width: 38px; height: 38px; }
+  .doc-item { padding: 9px 8px; }
+  .tabs button { padding: 11px 12px; }
+  .toolbar button { min-width: 38px; height: 36px; }
+  .seg button { padding: 7px 12px; }
+  .menu button { padding: 11px 12px; }
+}
+
+/* ======================================================================= téléphone (détails) */
+@media (max-width: 760px) {
+  /* Pas de zoom automatique d'iOS sur les champs (police < 16 px). */
+  input:not([type=checkbox]):not([type=range]), select, textarea { font-size: 16px; }
+  .select.small { font-size: 14px; padding: 6px 8px; }
+
+  /* Accueil */
+  .home-inner { padding: 18px 14px 40px; }
+  .home h1 { font-size: 23px; }
+  .lead { font-size: 14px; margin-bottom: 16px; }
+  .dropzone.big { padding: 20px 14px; }
+  .dz-icon { font-size: 28px; }
+  .stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 16px 0; }
+  .stat { padding: 10px 12px; }
+  .stat .num { font-size: 22px; }
+  .card { padding: 12px; }
+
+  /* En-tête du document : titre sur toute la largeur, puis les commandes */
+  .doc-header { padding: 8px 10px; gap: 6px; }
+  .doc-title { order: -1; flex: 1 1 100%; font-size: 16px; }
+  #doc-subject { flex: 1 1 70px; min-width: 0; max-width: none; } /* rétrécit pour garder les boutons sur la ligne */
+  #doc-parent { max-width: 100%; }
+  .doc-header .icon-btn { width: 34px; }
+  #mode-switch button { padding: 6px 10px; }
+  /* En lecture seule (aperçu), la barre d'outils d'édition ne sert à rien. */
+  .editor-pane:has(.editor-split.mode-preview) .toolbar { display: none; }
+  #btn-toggle-ai { display: none; } /* déjà dans la barre du haut */
+  #mode-switch [data-mode="split"] { display: none; } /* pas de place pour deux colonnes */
+  .doc-tabs, .tabs { overflow-x: auto; scrollbar-width: none; }
+  .tabs button { white-space: nowrap; }
+  .banner { padding: 8px 10px; }
+
+  /* Éditeur : barre d'outils qui défile, une seule colonne */
+  .toolbar { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; padding: 4px 6px; }
+  .toolbar::-webkit-scrollbar, .tabs::-webkit-scrollbar { display: none; }
+  .toolbar button { flex: none; }
+  .find-bar input:not([type=checkbox]) { width: auto; flex: 1 1 120px; }
+  #editor { padding: 14px; font-size: 15px; border-right: none; }
+  #preview { padding: 16px 14px 60px; }
+  .editor-split.mode-edit #editor, .editor-split.mode-preview #preview { padding-left: 14px; padding-right: 14px; }
+  .markdown { font-size: 15.5px; }
+  .markdown h1 { font-size: 1.5em; }
+  .statusbar { gap: 8px; padding: 5px 10px; flex-wrap: wrap; }
+  #doc-source { display: none; }
+  .original-bar { padding: 6px 10px; }
+  .original-bar .only-phone { flex-basis: 100%; }
+
+  /* Assistant IA */
+  .ai-head { padding: 10px 10px 6px; }
+  .ai-head .icon-btn { width: 40px; height: 40px; font-size: 18px; }
+  .ai-body { padding: 10px 12px 16px; }
+  .task { min-height: 52px; }
+
+  /* QCM, flashcards */
+  .quiz { padding: 16px 14px 40px; }
+  .quiz-q { font-size: 17px; }
+  .choice { padding: 12px; font-size: 15px; }
+  .review-page, .review { padding: 16px 12px 40px; }
+  .review-page-head { flex-wrap: wrap; }
+  .flashcard { min-height: 220px; padding: 22px 18px; }
+  .flashcard .front { font-size: 18px; }
+  .cards-editor { padding: 16px 12px 40px; }
+  .card-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .card-row textarea { grid-column: 1; }
+  .card-row > button { grid-column: 2; grid-row: 1 / span 2; align-self: center; }
+  .card-row .meta { grid-column: 1 / -1; }
+
+  /* Calendrier : cases compactes, les examens en petites barres de couleur (détails dans « À venir ») */
+  .cal-page { padding: 14px 10px 40px; }
+  .cal-head h2 { font-size: 19px; flex-basis: 100%; }
+  .cal-main { padding: 8px; }
+  .cal-nav b { min-width: 0; flex: 1; }
+  .cal-dow { padding: 4px 0; font-size: 10px; }
+  .cal-day { min-height: 54px; padding: 2px; gap: 2px; }
+  .cal-day .num { width: 22px; height: 22px; font-size: 11.5px; align-self: center; }
+  .cal-ev { font-size: 0; height: 6px; padding: 0; border-left: none; border-radius: 3px; background: var(--ev, var(--accent)); }
+  .cal-ev b { display: none; }
+  .cal-more { font-size: 10px; padding: 0; text-align: center; }
+
+  /* Fenêtres : presque plein écran */
+  .dialog { width: calc(100vw - 16px); max-width: none; max-height: calc(100dvh - 16px); }
+  .dialog form { padding: 16px 14px; gap: 12px; }
+  .dialog footer { flex-wrap: wrap; }
+  .grid2 { grid-template-columns: 1fr; }
+  .imp-list li { flex-wrap: wrap; }
+
+  .toasts { left: 10px; right: 10px; bottom: max(10px, env(safe-area-inset-bottom)); align-items: stretch; }
+  .toast { max-width: none; }
+  .login-card { padding: 20px 16px; }
+}
+@media (max-width: 420px) {
+  .grades { grid-template-columns: 1fr 1fr !important; }
+  .tool-grid { grid-template-columns: 1fr 1fr; }
+  .home-cols { gap: 0; }
+}

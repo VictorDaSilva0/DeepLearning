@@ -668,6 +668,7 @@ function go(hash) {
 }
 
 async function route() {
+  setNav(false); // téléphone : on referme la bibliothèque après un choix
   const m = location.hash.match(/^#doc\/(\d+)/);
   if (m) return openDoc(+m[1]);
   await leaveDoc();
@@ -752,6 +753,8 @@ async function showHome() {
 function updateDueBadge(n) {
   $('#due-count').textContent = n;
   $('#btn-review-all').classList.toggle('has', n > 0);
+  $('#m-due').textContent = n > 99 ? '99+' : n;
+  $('#m-due').hidden = !n;
 }
 
 async function refreshDueCount() {
@@ -1043,11 +1046,22 @@ function applyMode(mode, remember = true) {
     state.mode = mode;
     store.set('mode', mode);
   }
+  // Sur téléphone, pas de place pour l'éditeur et l'aperçu côte à côte : on lit l'aperçu.
+  const shown = mode === 'split' && isPhone() ? 'preview' : mode;
   const split = $('#editor-split');
   split.classList.remove('mode-edit', 'mode-split', 'mode-preview');
-  split.classList.add('mode-' + mode);
-  $$('#mode-switch button').forEach((b) => b.classList.toggle('active', b.dataset.mode === mode));
-  if (mode !== 'edit') renderPreviewNow();
+  split.classList.add('mode-' + shown);
+  $$('#mode-switch button').forEach((b) => b.classList.toggle('active', b.dataset.mode === shown));
+  if (shown !== 'edit') renderPreviewNow();
+}
+
+// ------------------------------------------------------------------ téléphone
+const phoneQuery = window.matchMedia('(max-width: 760px)');
+const isPhone = () => phoneQuery.matches;
+
+/** Bibliothèque en tiroir (téléphone). */
+function setNav(open) {
+  $('#app').classList.toggle('nav-open', !!open && isPhone());
 }
 
 let previewSeq = 0;
@@ -1691,7 +1705,14 @@ async function generate() {
     card.hidden = false;
     card.className = 'done-card' + (done.warning ? ' warn' : '');
     card.innerHTML = `<span>${done.warning ? '⚠ ' + esc(done.warning) : '✔ Ajouté à ta bibliothèque'}</span><button class="btn small primary">Ouvrir →</button>`;
-    card.querySelector('button').onclick = () => go(`#doc/${newDoc.id}`);
+    card.querySelector('button').onclick = () => {
+      if (isPhone()) {
+        // L'assistant couvre tout l'écran : on le referme pour montrer le document créé.
+        state.aiOpen = false;
+        applyAIOpen();
+      }
+      go(`#doc/${newDoc.id}`);
+    };
     await loadLibrary();
     refreshDueCount();
   } catch (e) {
@@ -3040,6 +3061,24 @@ function bindEvents() {
     state.aiOpen = false;
     applyAIOpen();
   };
+
+  // Téléphone : barre du haut et tiroir de la bibliothèque
+  $('#m-menu').onclick = () => setNav(!$('#app').classList.contains('nav-open'));
+  $('#drawer-backdrop').onclick = () => setNav(false);
+  $('#m-calendar').onclick = () => go('#calendar');
+  $('#m-review').onclick = () => go('#review');
+  $('#m-ai').onclick = () => {
+    state.aiOpen = !state.aiOpen;
+    setNav(false);
+    applyAIOpen();
+  };
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && $('#app').classList.contains('nav-open')) setNav(false);
+  });
+  phoneQuery.addEventListener('change', () => {
+    setNav(false);
+    applyMode(state.mode, false); // repasse en éditeur + aperçu en quittant le format téléphone
+  });
   $('#doc-tabs').addEventListener('click', (e) => {
     const b = e.target.closest('[data-dtab]');
     if (b) showDocTab(b.dataset.dtab);

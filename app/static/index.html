@@ -2,15 +2,19 @@
 <html lang="fr">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="theme-color" content="#5b5bd6">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Révision">
   <title>DeepLearning — atelier de révision</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧠</text></svg>">
-  <link rel="stylesheet" href="/static/style.css?v=11">
+  <link rel="stylesheet" href="/static/style.css?v=12">
   <!-- KaTeX (formules) : optionnel, chargé depuis un CDN quand Internet est disponible. -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
-  <script defer src="/static/app.js?v=11"></script>
+  <script defer src="/static/app.js?v=12"></script>
 </head>
 <body>
 <div id="app" class="layout">
@@ -55,8 +59,21 @@
     </button>
   </aside>
 
+  <!-- Fond sombre derrière la bibliothèque ouverte en tiroir (téléphone) -->
+  <div id="drawer-backdrop" class="drawer-backdrop"></div>
+
   <!-- ============================================================ Zone centrale -->
   <main id="main">
+
+    <!-- Barre du haut, sur téléphone uniquement -->
+    <header id="mobile-bar" class="mobile-bar">
+      <button id="m-menu" class="icon-btn" title="Bibliothèque" aria-label="Ouvrir la bibliothèque">☰</button>
+      <a href="#" class="m-brand"><span class="brand-logo">🧠</span><b>Révision</b></a>
+      <span class="spacer"></span>
+      <button id="m-calendar" class="icon-btn" title="Examens" aria-label="Calendrier des examens">📅</button>
+      <button id="m-review" class="icon-btn m-review" title="Réviser" aria-label="Réviser les flashcards">🃏<b id="m-due" hidden></b></button>
+      <button id="m-ai" class="btn small accent" title="Assistant IA">✨ IA</button>
+    </header>
 
     <div id="update-banner" class="update-banner" hidden>
       <span>⚠ DeepLearning a été mis à jour, mais le serveur tourne encore sur l'<b>ancienne version</b> : certaines fonctions ne marcheront pas.
@@ -72,7 +89,7 @@
 
         <div id="home-drop" class="dropzone big">
           <div class="dz-icon">📥</div>
-          <div><b>Glisse tes cours ici</b> ou <button class="link" id="home-browse">parcours tes fichiers</button></div>
+          <div><b class="only-desktop">Glisse tes cours ici ou </b><button class="link" id="home-browse">parcours tes fichiers</button></div>
           <small>PDF · Word (.docx, .doc) · PowerPoint (.pptx, .ppt) · Texte · Markdown</small>
         </div>
 
@@ -211,6 +228,7 @@
       <div id="pane-original" class="pane" hidden>
         <div class="original-bar">
           <span id="orig-info" class="muted small"></span>
+          <span class="only-phone muted small">Sur téléphone, le PDF s'affiche mieux avec « Nouvel onglet ».</span>
           <span class="spacer"></span>
           <a id="orig-open" class="btn small" target="_blank" rel="noopener">↗ Nouvel onglet</a>
           <a id="orig-download" class="btn small" download>⤓ Télécharger le fichier</a>
