@@ -100,6 +100,7 @@ Une adresse DuckDNS (`duckdns.org`) ne marche pas avec un tunnel : Cloudflare n'
 | **IA — Outils texte** | Sur la sélection : corriger, reformuler, simplifier, développer, résumer, structurer, exemples, traduire, ou consigne libre ; puis *Remplacer* / *Insérer après* (annulable avec Ctrl+Z). |
 | **QCM** | Quiz interactif noté (raccourcis 1–4 / Entrée), explications, historique des scores, conversion des erreurs en flashcards. |
 | **En direct** | Comme sur un Google Docs : on voit **qui est connecté** et où (« 2 en ligne » en haut de la bibliothèque, pastilles de couleur à côté des documents ouverts, avatars dans l'en-tête du document). Plusieurs personnes peuvent **écrire en même temps** dans le même cours : les frappes de chacun apparaissent en direct chez les autres, avec le **curseur et le nom** de la personne, et « ✎ Léa écrit… » en bas. Les imports, fiches générées, renommages, suppressions et examens ajoutés au calendrier s'affichent chez tout le monde sans recharger la page. |
+| **Images** | Dans l'éditeur : bouton 🖼 (sur téléphone, il propose aussi l'appareil photo), **coller** une capture d'écran (Ctrl+V) ou **glisser** une image sur le texte. Elle est envoyée au serveur (photos remises à l'endroit et réduites à 2000 px) et insérée en Markdown : `![légende](/api/images/…)`. Un clic sur une image de l'aperçu l'ouvre en grand ; elles apparaissent aussi dans l'export imprimable. Astuce taille : `![légende](/api/images/…){: width=400 }`. |
 | **Changer le type** | La pastille en haut à gauche d'un document (« 📝 Note ▾ ») change son type : une note écrite à la main devient un CM, un TD, un examen d'entraînement, une fiche… Il se range alors dans la bonne catégorie de la matière (QCM et flashcards exceptés : ils se créent avec l'IA). |
 | **Chat** | 💬 *Chat* (en haut de la bibliothèque, dans la barre du téléphone, ou dans l'en-tête d'un document) : un fil **Général** pour tout le monde et un fil **par document** (« Ce document »). Messages en direct, « Léa écrit… », liens cliquables, badges de messages non lus (aussi à côté des documents dans la bibliothèque) et notification quand quelqu'un écrit. |
 | **Droits** | Seuls les **administrateurs** peuvent supprimer : documents, matières, examens du calendrier, flashcards, messages du chat, comptes (et « revenir à l'anglais », qui efface une traduction). Les autres comptes peuvent tout lire, créer et modifier ; les boutons de suppression ne leur sont pas affichés et le serveur refuse ces actions. |
@@ -123,6 +124,7 @@ app/
   office.py      conversions Word / PowerPoint → PDF (aperçu), .doc / .ppt → .docx / .pptx
                  (LibreOffice sous Linux/Docker, Microsoft Office sous Windows)
   auth.py        comptes et sessions de l'outil partagé (DL_AUTH=1)
+  images.py      images insérées dans les documents (data/images)
   attachments.py fichiers donnés directement à l'IA (lus, gardés 3 jours, jamais importés)
   live.py        temps réel (WebSocket /api/live) : présence, modifications des autres, édition à plusieurs
   db.py          SQLite (data/deeplearning.db)

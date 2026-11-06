@@ -651,7 +651,8 @@ textarea { resize: vertical; }
 .markdown th { background: var(--panel-2); }
 .markdown mark { background: var(--mark); color: inherit; padding: 0 2px; border-radius: 2px; }
 .markdown hr { border: none; border-top: 1px solid var(--border); margin: 1.6em 0; }
-.markdown img { max-width: 100%; }
+.markdown img { max-width: 100%; height: auto; border-radius: 6px; vertical-align: middle; }
+#preview img { cursor: zoom-in; }
 .markdown .task-list-item { list-style: none; margin-left: -1.3em; }
 .markdown .arithmatex { overflow-x: auto; }
 .markdown details { background: var(--panel-2); border-radius: 8px; padding: 6px 12px; }

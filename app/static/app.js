@@ -1159,7 +1159,7 @@ async function renderPreviewNow() {
   try {
     const html = await renderMarkdown(editor.value);
     if (mine !== previewSeq) return;
-    preview.innerHTML = html || '<p class="muted">Aperçu vide.</p>';
+    setPreviewHTML(html || '<p class="muted">Aperçu vide.</p>');
     typeset(preview);
     fitToWidth(preview);
   } catch {
@@ -1167,6 +1167,27 @@ async function renderPreviewNow() {
   }
 }
 const renderPreview = debounce(renderPreviewNow, 250);
+
+/** Remplace l'aperçu en gardant les images déjà affichées : pas de clignotement ni de saut de défilement
+ *  à chaque frappe quand le document contient des images. */
+function setPreviewHTML(html) {
+  const shown = new Map();
+  for (const img of preview.querySelectorAll('img')) {
+    const src = img.getAttribute('src');
+    if (!shown.has(src)) shown.set(src, []);
+    shown.get(src).push(img);
+  }
+  const tpl = document.createElement('template');
+  tpl.innerHTML = html;
+  for (const img of tpl.content.querySelectorAll('img')) {
+    const keep = shown.get(img.getAttribute('src'))?.shift();
+    if (!keep) continue;
+    for (const a of [...keep.attributes]) if (!img.hasAttribute(a.name)) keep.removeAttribute(a.name);
+    for (const a of [...img.attributes]) keep.setAttribute(a.name, a.value);
+    img.replaceWith(keep);
+  }
+  preview.replaceChildren(tpl.content);
+}
 
 function setSaveState(text) {
   $('#save-state').textContent = text;
@@ -2339,7 +2360,7 @@ function insertBlock(text, selFrom, selTo) {
 
 function editorCommand(cmd) {
   if (editor.readOnly) return;
-  if ($('#editor-split').classList.contains('mode-preview') && !['find', 'focus'].includes(cmd)) applyMode('split');
+  if ($('#editor-split').classList.contains('mode-preview') && !['find', 'focus', 'image'].includes(cmd)) applyMode('split');
   const { s, e, text } = getSel();
   switch (cmd) {
     case 'h1': return toggleHeading(1);
@@ -2371,9 +2392,46 @@ function editorCommand(cmd) {
       return insertBlock('```\n' + inner + '\n```', 4, 4 + inner.length);
     }
     case 'hr': return insertBlock('---');
+    case 'image': return $('#image-input').click();
     case 'find': return openFind();
     case 'focus': return $('#app').classList.toggle('focus');
     default:
+  }
+}
+
+/** Remplace une plage sans déplacer le curseur de la personne qui écrit (il suit le texte). */
+function replaceKeepingCaret(at, length, text) {
+  const shift = (p) => (p >= at + length ? p + text.length - length : p > at ? at + text.length : p);
+  replaceRange(at, at + length, text, shift(editor.selectionStart), shift(editor.selectionEnd));
+}
+
+/** Envoie des images au serveur et les insère dans le texte, chacune sur sa ligne, à l'endroit du curseur. */
+async function insertImages(files) {
+  const imgs = [...files].filter((f) => f.type.startsWith('image/'));
+  if (!imgs.length || !state.current) return;
+  if (editor.readOnly) return toast('Ce document ne peut pas être modifié ici.');
+  for (const f of imgs) {
+    const label = (f.name || '').replace(/\.[^.]+$/, '').replace(/[[\]()\n]+/g, ' ').trim();
+    const alt = !label || /^image$/i.test(label) ? 'image' : label;
+    // Repère provisoire (visible des autres aussi) remplacé par l'image une fois envoyée.
+    const token = `![⏳ envoi de l'image « ${alt} »… ${Math.random().toString(36).slice(2, 7)}]()`;
+    const v = editor.value;
+    const pos = editor.selectionEnd;
+    const before = pos > 0 && v[pos - 1] !== '\n' ? '\n\n' : pos > 1 && v[pos - 2] !== '\n' ? '\n' : '';
+    const after = pos >= v.length ? '\n' : v[pos] !== '\n' ? '\n\n' : v[pos + 1] === '\n' ? '' : '\n';
+    replaceRange(pos, pos, before + token + after, pos + before.length + token.length + after.length);
+    let markdown = '';
+    try {
+      const fd = new FormData();
+      fd.append('file', f, f.name || 'image.png');
+      const res = await fetch('/api/images', { method: 'POST', body: fd });
+      if (!res.ok) throw await httpError('/api/images', res);
+      markdown = `![${alt}](${(await res.json()).url})`;
+    } catch (e) {
+      toast(`Image « ${alt} » : ${e.message}`, { error: true });
+    }
+    const at = editor.value.indexOf(token);
+    if (at >= 0) replaceKeepingCaret(at, token.length, markdown);
   }
 }
 
@@ -4339,6 +4397,22 @@ function bindEvents() {
     });
   }
   editor.addEventListener('blur', liveSendCaret);
+  // Images : bouton 🖼, ou coller une capture d'écran directement dans le texte
+  $('#image-input').onchange = (e) => {
+    insertImages(e.target.files);
+    e.target.value = '';
+  };
+  editor.addEventListener('paste', (e) => {
+    const files = [...(e.clipboardData?.files || [])].filter((f) => f.type.startsWith('image/'));
+    if (!files.length) return;
+    e.preventDefault();
+    insertImages(files);
+  });
+  // Un clic sur une image de l'aperçu l'ouvre en grand.
+  preview.addEventListener('click', (e) => {
+    const img = e.target.closest('img');
+    if (img && !e.target.closest('a') && img.getAttribute('src')) window.open(img.src, '_blank', 'noopener');
+  });
   // Clavier de téléphone : un mot en cours de composition ne doit pas être modifié sous les doigts.
   editor.addEventListener('compositionstart', () => liveHold(true));
   editor.addEventListener('compositionend', () => setTimeout(() => liveHold(false), 0));
@@ -4594,10 +4668,17 @@ function bindEvents() {
   });
   // Au-dessus du panneau IA, les fichiers sont donnés à l'IA au lieu d'être importés.
   const overAI = (e) => !!e.target.closest?.('#ai-panel') && state.aiOpen && !$('#dlg-import').open;
+  // Des images glissées sur le texte d'un document y sont insérées (au lieu d'être importées).
+  const onlyImages = (e) => [...(e.dataTransfer?.items || [])].every((i) => i.kind !== 'file' || i.type.startsWith('image/'));
+  const overEditor = (e) => !!e.target.closest?.('#pane-editor') && !!state.current && !editor.readOnly && !$('#dlg-import').open;
   window.addEventListener('dragover', (e) => {
     if (!hasFiles(e)) return;
     e.preventDefault();
-    const msg = overAI(e) ? "📎 Dépose ici pour donner le fichier à l'IA (sans l'importer)" : '📥 Dépose tes cours pour les importer';
+    const msg = overAI(e)
+      ? "📎 Dépose ici pour donner le fichier à l'IA (sans l'importer)"
+      : overEditor(e) && onlyImages(e)
+        ? "🖼 Dépose pour insérer l'image dans le document"
+        : '📥 Dépose tes cours pour les importer';
     const label = $('#drop-overlay div');
     if (label.textContent !== msg) label.textContent = msg;
   });
@@ -4611,6 +4692,10 @@ function bindEvents() {
     if (overAI(e)) {
       if (state.aiTab !== 'chat') setAITab('chat');
       addChatFiles(files);
+      return;
+    }
+    if (overEditor(e) && files.every((f) => f.type.startsWith('image/'))) {
+      insertImages(files);
       return;
     }
     const head = e.target.closest?.('.subject-head');

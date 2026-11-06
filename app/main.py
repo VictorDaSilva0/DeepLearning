@@ -22,7 +22,7 @@ from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import __version__, attachments, auth, config, db, importers, live, llm, office, prompts, render, srs
+from . import __version__, attachments, auth, config, db, images, importers, live, llm, office, prompts, render, srs
 
 log = logging.getLogger("deeplearning")
 LOADED_CODE = config.code_fingerprint()  # version du code chargée par ce processus
@@ -556,6 +556,31 @@ def export_document(doc_id: int, format: str = "md") -> Response:
         doc["content"],
         media_type="text/markdown; charset=utf-8",
         headers={"Content-Disposition": _content_disposition("attachment", f"{safe}.md")},
+    )
+
+
+@app.post("/api/images")
+async def upload_image(file: UploadFile = File(...)) -> dict[str, Any]:
+    """Image insérée dans un document (bouton 🖼, coller une capture, glisser-déposer)."""
+    data = await file.read(images.MAX_MB * 1024 * 1024 + 1)
+    if len(data) > images.MAX_MB * 1024 * 1024:
+        raise HTTPException(400, f"Image trop lourde (> {images.MAX_MB} Mo).")
+    try:
+        return await asyncio.to_thread(images.save, data)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.get("/api/images/{name}")
+def get_image(name: str) -> FileResponse:
+    path = images.IMG_DIR / name
+    if not images.NAME_RE.match(name) or not path.exists():
+        raise HTTPException(404, "Image introuvable.")
+    return FileResponse(
+        path,
+        media_type=images.MEDIA_TYPES[name.rsplit(".", 1)[1]],
+        # Le nom est unique et l'image ne change jamais : le navigateur la garde en cache.
+        headers={"Cache-Control": "private, max-age=31536000, immutable", "X-Content-Type-Options": "nosniff"},
     )
 
 

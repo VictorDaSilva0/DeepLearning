@@ -9,12 +9,12 @@
   <meta name="apple-mobile-web-app-title" content="Révision">
   <title>DeepLearning — atelier de révision</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧠</text></svg>">
-  <link rel="stylesheet" href="/static/style.css?v=17">
+  <link rel="stylesheet" href="/static/style.css?v=18">
   <!-- KaTeX (formules) : optionnel, chargé depuis un CDN quand Internet est disponible. -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
-  <script defer src="/static/app.js?v=17"></script>
+  <script defer src="/static/app.js?v=18"></script>
 </head>
 <body>
 <div id="app" class="layout">
@@ -195,6 +195,8 @@
           <span class="sep"></span>
           <button data-cmd="link" title="Lien (Ctrl+K)">🔗</button>
           <button data-cmd="table" title="Tableau">▦</button>
+          <button data-cmd="image" title="Insérer une image (ou colle-la avec Ctrl+V, ou glisse-la dans le texte)">🖼</button>
+          <input type="file" id="image-input" accept="image/*" multiple hidden>
           <button data-cmd="math" title="Formule LaTeX">∑</button>
           <button data-cmd="codeblock" title="Bloc de code">{ }</button>
           <button data-cmd="hr" title="Séparateur">―</button>

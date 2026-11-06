@@ -121,6 +121,8 @@ EXPORT_TEMPLATE = """<!doctype html>
   pre code {{ background: none; padding: 0; }}
   blockquote {{ margin: 1em 0; padding: .5em 1em; border-left: 4px solid #6366f1; background: #eef2ff; }}
   mark {{ background: #fef08a; }}
+  img {{ max-width: 100%; height: auto; border-radius: 6px; }}
+  @media print {{ img {{ break-inside: avoid; }} }}
   @media print {{ body {{ margin: 0; max-width: none; }} h2 {{ break-after: avoid; }} }}
 </style>
 </head>
