@@ -1,0 +1,44 @@
+# DeepLearning sur ton PC, accessible à tes amis depuis Internet sans ouvrir de port :
+#   docker compose up -d --build
+# - app    : l'outil et sa base de données (volume « app-data »). Depuis ce PC : http://127.0.0.1:8765
+#            L'IA tourne dans Ollama, installé sur le PC (carte graphique).
+#            Au premier démarrage, ta bibliothèque actuelle (dossier data/) est recopiée dans le volume.
+# - tunnel : connexion sortante vers Cloudflare, qui publie l'outil en HTTPS.
+#            Sans réglage : adresse temporaire https://xxx.trycloudflare.com (change à chaque redémarrage),
+#            affichée dans l'outil → Mon compte (administrateurs).
+#            Avec CLOUDFLARE_TUNNEL_TOKEN dans .env : adresse fixe sur ton nom de domaine (voir le README).
+name: deeplearning
+
+services:
+  app:
+    build: .
+    image: deeplearning
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Ollama installé sur le PC (hors Docker).
+      OLLAMA_URL: http://host.docker.internal:11434
+      TUNNEL_METRICS_URL: http://tunnel:2000
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      # Uniquement en local : de l'extérieur, on passe obligatoirement par le tunnel (HTTPS + comptes).
+      - "127.0.0.1:${DL_PORT:-8765}:8765"
+    volumes:
+      - app-data:/data
+      # Lecture seule, utilisé une seule fois (volume vide) pour reprendre ta bibliothèque actuelle.
+      - ./data:/seed:ro
+
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    # Avec jeton : « tunnel run --token … » (tunnel nommé, adresse fixe).
+    # Sans jeton : « tunnel --url http://app:8765 » (tunnel rapide, adresse temporaire).
+    command: tunnel --no-autoupdate --metrics 0.0.0.0:2000 ${CLOUDFLARE_TUNNEL_TOKEN:+run --token }${CLOUDFLARE_TUNNEL_TOKEN:---url http://app:8765}
+    depends_on:
+      - app
+
+volumes:
+  app-data:

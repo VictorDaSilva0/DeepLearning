@@ -97,9 +97,22 @@ async function api(path, { method = 'GET', body } = {}) {
     opts.headers['Content-Type'] = 'application/json';
   }
   const res = await fetch(path, opts);
-  if (!res.ok) throw new Error(await errorMessage(res));
+  if (!res.ok) throw await httpError(path, res);
   const ct = res.headers.get('content-type') || '';
   return ct.includes('json') ? res.json() : res.text();
+}
+
+/** Erreur d'une requête ; une session expirée (401) réaffiche l'écran de connexion. */
+async function httpError(path, res) {
+  if (res.status === 401 && !path.startsWith('/api/auth/') && !login.pending) {
+    requireLogin().then(() => {
+      loadLibrary();
+      refreshHealth();
+    });
+  }
+  const err = new Error(res.status === 401 ? 'Connexion requise.' : await errorMessage(res));
+  err.status = res.status;
+  return err;
 }
 
 /** Lit une réponse NDJSON (une ligne JSON par événement) au fil de l'eau. */
@@ -110,7 +123,7 @@ async function streamNDJSON(path, body, onEvent, signal) {
     body: JSON.stringify(body ?? {}),
     signal,
   });
-  if (!res.ok) throw new Error(await errorMessage(res));
+  if (!res.ok) throw await httpError(path, res);
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
@@ -561,7 +574,8 @@ function showMenu(anchor, items) {
     };
     menu.append(b);
   }
-  document.body.append(menu);
+  // Dans une fenêtre modale, le menu doit être à l'intérieur (sinon il reste caché derrière elle).
+  (anchor.closest('dialog') || document.body).append(menu);
   const r = anchor.getBoundingClientRect();
   menu.style.top = `${r.bottom + 4}px`;
   menu.style.left = `${Math.max(8, Math.min(r.left, innerWidth - 230))}px`;
@@ -992,7 +1006,7 @@ async function loadOriginal() {
   $('#orig-open').href = url;
   $('#orig-download').href = `/api/documents/${doc.id}/source`;
   $('#orig-download').setAttribute('download', doc.source_name || '');
-  $('#orig-info').textContent = doc.source_name + (ext === 'pdf' ? '' : ' — affiché en PDF (converti avec Microsoft Office)');
+  $('#orig-info').textContent = doc.source_name + (ext === 'pdf' ? '' : ' — affiché en PDF (conversion automatique)');
   if (frame.dataset.doc === String(doc.id) && !frame.hidden) return;
 
   const loading = $('#orig-loading');
@@ -1002,7 +1016,7 @@ async function loadOriginal() {
   loading.classList.remove('error');
   loading.querySelector('.spinner').hidden = false;
   $('#orig-msg').textContent =
-    ext === 'pdf' ? 'Chargement du PDF…' : `Conversion du fichier ${ext.toUpperCase()} avec ${ext.startsWith('ppt') ? 'PowerPoint' : 'Word'}… (quelques secondes la première fois)`;
+    ext === 'pdf' ? 'Chargement du PDF…' : `Conversion du fichier ${ext.toUpperCase()} en PDF… (quelques secondes la première fois)`;
   try {
     const res = await fetch(url);
     if (!res.ok) throw new Error(await errorMessage(res));
@@ -2570,6 +2584,11 @@ async function openSettings() {
     .sort((a, b) => semNum(a) - semNum(b));
   $('#set-semester').innerHTML = sems.map((s) => `<option value="${s}">${s ? semLabel(s) : 'Aucun (tout déplier)'}</option>`).join('');
   $('#set-semester').value = settings.current_semester || '';
+  // Réglages communs à tous : en lecture seule pour les comptes non administrateurs.
+  const ro = !isAdmin();
+  $$('#settings-form select, #settings-form input').forEach((el) => (el.disabled = ro));
+  $('#set-save').hidden = ro;
+  $('#set-readonly').hidden = !ro;
   $('#dlg-settings').showModal();
 }
 
@@ -2599,6 +2618,231 @@ async function saveSettings() {
   } catch (e) {
     toast(e.message, { error: true });
   }
+}
+
+// ================================================================== comptes (outil partagé)
+const login = { pending: null, resolve: null, step: 'auth', password: '' };
+const isAdmin = () => !state.authEnabled || !!state.user?.is_admin;
+
+function setUser(user, enabled) {
+  state.user = user;
+  state.authEnabled = !!enabled;
+  $('#btn-account').hidden = !state.authEnabled || !user;
+  if (user) {
+    $('#account-name').textContent = user.username;
+    $('#account-avatar').textContent = user.username.slice(0, 1).toUpperCase();
+  }
+}
+
+/** Vérifie la session au démarrage ; affiche l'écran de connexion si besoin. */
+async function ensureLogin() {
+  try {
+    const me = await api('/api/auth/me');
+    setUser(me.user, me.auth);
+    if (!me.user.must_change) return;
+    // Mot de passe provisoire d'une visite précédente : on le redemande avant d'en choisir un nouveau.
+    await api('/api/auth/logout', { method: 'POST' }).catch(() => {});
+  } catch (e) {
+    if (e.status !== 401) return; // serveur injoignable : init() affichera l'erreur
+  }
+  await requireLogin();
+}
+
+/** Affiche l'écran de connexion ; la promesse est tenue une fois connecté avec un mot de passe définitif. */
+function requireLogin() {
+  if (login.pending) return login.pending;
+  login.pending = new Promise((resolve) => (login.resolve = resolve));
+  for (const d of $$('dialog[open]')) d.close();
+  showLoginStep('auth');
+  $('#login-screen').hidden = false;
+  setTimeout(() => ($('#login-user').value ? $('#login-pass') : $('#login-user')).focus(), 0);
+  return login.pending;
+}
+
+function showLoginStep(step) {
+  login.step = step;
+  $('#login-step-auth').hidden = step !== 'auth';
+  $('#login-step-change').hidden = step !== 'change';
+  $('#login-user').required = $('#login-pass').required = step === 'auth';
+  $('#login-new').required = $('#login-new2').required = step === 'change';
+  $('#login-submit').textContent = step === 'auth' ? 'Se connecter' : 'Enregistrer et continuer';
+  $('#login-error').hidden = true;
+}
+
+async function submitLogin(e) {
+  e.preventDefault();
+  const btn = $('#login-submit');
+  btn.disabled = true;
+  $('#login-error').hidden = true;
+  try {
+    if (login.step === 'auth') {
+      const password = $('#login-pass').value;
+      const r = await api('/api/auth/login', { method: 'POST', body: { username: $('#login-user').value.trim(), password } });
+      setUser(r.user, r.auth);
+      if (r.user.must_change) {
+        login.password = password;
+        showLoginStep('change');
+        $('#login-new').focus();
+        return;
+      }
+    } else {
+      const pw = $('#login-new').value;
+      if (pw !== $('#login-new2').value) throw new Error('Les deux mots de passe ne correspondent pas.');
+      const r = await api('/api/auth/password', { method: 'POST', body: { current: login.password, new: pw } });
+      setUser(r.user, true);
+      toast('Mot de passe enregistré. Bienvenue !');
+    }
+    login.password = '';
+    for (const id of ['#login-pass', '#login-new', '#login-new2']) $(id).value = '';
+    $('#login-screen').hidden = true;
+    const resolve = login.resolve;
+    login.pending = login.resolve = null;
+    resolve?.();
+  } catch (err) {
+    $('#login-error').textContent = err.message;
+    $('#login-error').hidden = false;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function logout() {
+  await api('/api/auth/logout', { method: 'POST' }).catch(() => {});
+  location.hash = '';
+  location.reload();
+}
+
+async function openAccount() {
+  if (!state.authEnabled || !state.user) return;
+  $('#acc-username').textContent = state.user.username;
+  for (const id of ['#acc-current', '#acc-new', '#acc-new2', '#acc-new-user']) $(id).value = '';
+  $('#acc-secret').hidden = true;
+  $('#acc-admin').hidden = !state.user.is_admin;
+  $('#dlg-account').showModal();
+  if (state.user.is_admin) {
+    renderPublicUrl();
+    renderUsers();
+  }
+}
+
+async function changeMyPassword() {
+  const current = $('#acc-current').value;
+  const pw = $('#acc-new').value;
+  if (!current || !pw) return toast('Remplis le mot de passe actuel et le nouveau.', { error: true });
+  if (pw !== $('#acc-new2').value) return toast('Les deux nouveaux mots de passe ne correspondent pas.', { error: true });
+  try {
+    await api('/api/auth/password', { method: 'POST', body: { current, new: pw } });
+    for (const id of ['#acc-current', '#acc-new', '#acc-new2']) $(id).value = '';
+    toast('Mot de passe changé (tes autres appareils ont été déconnectés).');
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+async function renderPublicUrl() {
+  const box = $('#acc-url');
+  box.textContent = "Recherche de l'adresse…";
+  try {
+    const p = await api('/api/admin/public-url');
+    if (p.url) {
+      box.innerHTML = `<span>${p.status === 'up' ? '🟢' : '🟠'}</span><code>${esc(p.url)}</code>
+        <button type="button" class="btn small" data-copy="${esc(p.url)}">Copier</button>
+        ${p.temporary ? '<small class="muted">Adresse temporaire : elle change à chaque redémarrage du PC ou de Docker (la nouvelle s\'affiche ici).</small>' : ''}`;
+    } else if (p.status === 'off') {
+      box.textContent = "Pas de tunnel : l'outil n'est accessible que depuis ce PC.";
+    } else if (p.warning) {
+      box.innerHTML = `⚠️ <span>${esc(p.warning)}</span> <button type="button" class="link" data-refresh-url>vérifier à nouveau</button>`;
+    } else {
+      box.innerHTML = '🟠 Tunnel en cours de connexion… <button type="button" class="link" data-refresh-url>réessayer</button>';
+    }
+  } catch (e) {
+    box.textContent = e.message;
+  }
+}
+
+async function renderUsers() {
+  let users;
+  try {
+    users = await api('/api/users');
+  } catch (e) {
+    return toast(e.message, { error: true });
+  }
+  state.users = users;
+  const fmt = (iso) => (iso ? `${fmtDate(iso)} ${iso.slice(11, 16)}` : '');
+  $('#acc-users').innerHTML = users
+    .map(
+      (u) => `<li class="${u.active ? '' : 'off'}" data-uid="${u.id}">
+        <span class="avatar">${esc(u.username.slice(0, 1).toUpperCase())}</span>
+        <span class="who"><b>${esc(u.username)}</b><small>${u.last_login ? `Dernière connexion : ${fmt(u.last_login)}` : 'Jamais connecté'}</small></span>
+        ${u.is_admin ? '<span class="tag">admin</span>' : ''}
+        ${u.must_change && u.active ? '<span class="tag warn">mot de passe provisoire</span>' : ''}
+        ${u.active ? '' : '<span class="tag warn">désactivé</span>'}
+        ${u.id === state.user.id ? '<span class="muted small">(toi)</span>' : '<button type="button" class="icon-btn" data-umenu title="Actions">⋯</button>'}
+      </li>`,
+    )
+    .join('');
+}
+
+function showSecret(username, password, created) {
+  const box = $('#acc-secret');
+  box.hidden = false;
+  box.innerHTML = `<span>${created ? 'Compte créé' : 'Nouveau mot de passe provisoire'} pour <b>${esc(username)}</b> — transmets-le-lui, il ne sera plus affiché :</span>
+    <code>${esc(password)}</code>
+    <span class="muted small">Il devra choisir son propre mot de passe à la première connexion.</span>
+    <button type="button" class="btn small" data-copy="${esc(`Identifiant : ${username}\nMot de passe provisoire : ${password}`)}">Copier identifiant + mot de passe</button>`;
+}
+
+async function createUser() {
+  const username = $('#acc-new-user').value.trim();
+  if (!/^[\w.-]{2,32}$/.test(username)) {
+    return toast('Identifiant : 2 à 32 caractères, lettres, chiffres, point, tiret ou _ (sans espace).', { error: true });
+  }
+  try {
+    const r = await api('/api/users', { method: 'POST', body: { username, is_admin: $('#acc-new-admin').checked } });
+    $('#acc-new-user').value = '';
+    $('#acc-new-admin').checked = false;
+    showSecret(r.user.username, r.password, true);
+    renderUsers();
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+function userMenu(anchor, u) {
+  const act = async (fn) => {
+    try {
+      await fn();
+      renderUsers();
+    } catch (e) {
+      toast(e.message, { error: true });
+    }
+  };
+  showMenu(anchor, [
+    {
+      label: '🔑 Nouveau mot de passe provisoire',
+      run: () => act(async () => {
+        const r = await api(`/api/users/${u.id}/reset`, { method: 'POST' });
+        showSecret(u.username, r.password, false);
+      }),
+    },
+    {
+      label: u.is_admin ? '⬇ Retirer les droits admin' : '⬆ Rendre administrateur',
+      run: () => act(() => api(`/api/users/${u.id}`, { method: 'PATCH', body: { is_admin: !u.is_admin } })),
+    },
+    {
+      label: u.active ? '⏸ Désactiver (bloque la connexion)' : '▶ Réactiver',
+      run: () => act(() => api(`/api/users/${u.id}`, { method: 'PATCH', body: { active: !u.active } })),
+    },
+    {
+      label: '🗑 Supprimer le compte',
+      danger: true,
+      run: () => {
+        if (confirm(`Supprimer le compte « ${u.username} » ? (Les cours restent dans la bibliothèque.)`)) {
+          act(() => api(`/api/users/${u.id}`, { method: 'DELETE' }));
+        }
+      },
+    },
+  ]);
 }
 
 // ================================================================== recherche
@@ -2673,6 +2917,35 @@ function bindEvents() {
   $('#btn-calendar').onclick = () => go('#calendar');
   $('#update-reload').onclick = () => location.reload();
   $('#btn-settings').onclick = openSettings;
+
+  // Comptes
+  $('#login-form').addEventListener('submit', submitLogin);
+  $('#btn-account').onclick = openAccount;
+  $('#acc-save-pw').onclick = changeMyPassword;
+  $('#acc-create').onclick = createUser;
+  $('#acc-logout').onclick = logout;
+  $('#acc-new-user').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      createUser();
+    }
+  });
+  $('#dlg-account').addEventListener('click', (e) => {
+    const copy = e.target.closest('[data-copy]');
+    if (copy) {
+      navigator.clipboard.writeText(copy.dataset.copy).then(
+        () => toast('Copié.'),
+        () => toast('Copie impossible : sélectionne le texte à la main.', { error: true }),
+      );
+    }
+    if (e.target.closest('[data-refresh-url]')) renderPublicUrl();
+    const m = e.target.closest('[data-umenu]');
+    if (m) {
+      e.stopPropagation();
+      const u = state.users?.find((x) => x.id === +m.closest('[data-uid]').dataset.uid);
+      if (u) userMenu(m, u);
+    }
+  });
 
   // Matières
   $('#subj-save').onclick = saveSubjectDialog;
@@ -3012,6 +3285,7 @@ async function init() {
   applyAIOpen();
   applyMode(state.mode, false);
   setAITab('generate');
+  await ensureLogin(); // outil partagé : connexion avant tout le reste
   try {
     state.settings = await api('/api/settings');
     await loadLibrary();

@@ -14,24 +14,51 @@ from pathlib import Path
 from typing import Any, AsyncIterator
 from urllib.parse import quote
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+import httpx
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import __version__, config, db, importers, llm, office, prompts, render, srs
+from . import __version__, auth, config, db, importers, llm, office, prompts, render, srs
 
 log = logging.getLogger("deeplearning")
 LOADED_CODE = config.code_fingerprint()  # version du code chargée par ce processus
+
+# API accessible sans être connecté (le reste de /api/ exige une session quand DL_AUTH=1).
+PUBLIC_API = {"/api/version", "/api/auth/login", "/api/auth/me"}
+# Avec un mot de passe provisoire, seules ces routes restent ouvertes jusqu'au changement.
+PROVISIONAL_API = {"/api/auth/password", "/api/auth/logout"}
+
+
+def require_login(request: Request) -> None:
+    """Dépendance appliquée à toutes les routes : vérifie la session pour l'API."""
+    path = request.url.path
+    if not path.startswith("/api/") or path in PUBLIC_API:
+        return
+    user = auth.current_user(request)
+    if user is None:
+        raise HTTPException(401, "Connexion requise.")
+    if user.get("must_change") and path not in PROVISIONAL_API:
+        raise HTTPException(403, "Choisis d'abord un nouveau mot de passe.")
+    request.state.user = user
+
+
+def require_admin(request: Request) -> dict[str, Any]:
+    user = getattr(request.state, "user", None) or auth.current_user(request)
+    if not user or not user.get("is_admin"):
+        raise HTTPException(403, "Réservé aux administrateurs.")
+    return user
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     db.init_db()
+    auth.bootstrap_admin()
     yield
 
 
-app = FastAPI(title="DeepLearning", version=__version__, lifespan=lifespan)
+app = FastAPI(title="DeepLearning", version=__version__, lifespan=lifespan, dependencies=[Depends(require_login)])
 app.mount("/static", StaticFiles(directory=config.STATIC_DIR), name="static")
 
 KINDS = {
@@ -122,7 +149,159 @@ def version_info() -> dict[str, Any]:
         "pid": os.getpid(),
         # Processus lancé par run.py (superviseur du rechargement automatique) : c'est lui qu'on arrête.
         "supervisor": int(os.environ["DL_SUPERVISOR_PID"]) if os.environ.get("DL_SUPERVISOR_PID", "").isdigit() else None,
+        # Dans Docker, les PID ci-dessus sont ceux du conteneur : run.py ne doit jamais les arrêter.
+        "docker": config.IN_DOCKER,
     }
+
+
+# =========================================================================== comptes
+
+class LoginIn(BaseModel):
+    username: str = Field(..., min_length=1, max_length=60)
+    password: str = Field(..., min_length=1, max_length=200)
+
+
+@app.post("/api/auth/login")
+def login(body: LoginIn, request: Request, response: Response) -> dict[str, Any]:
+    if not config.AUTH_ENABLED:
+        return {"auth": False, "user": auth.public(auth.LOCAL_USER)}
+    ip = auth.client_ip(request)
+    auth.check_rate(ip, body.username)
+    user = auth.login(body.username, body.password)
+    if not user:
+        auth.record_failure(ip, body.username)
+        raise HTTPException(401, "Identifiant ou mot de passe incorrect.")
+    auth.clear_failures(body.username)
+    auth.start_session(request, response, user["id"])
+    db.update_user(user["id"], last_login=db.now())
+    log.info("Connexion de %s (%s)", user["username"], ip)
+    return {"auth": True, "user": auth.public(user)}
+
+
+@app.post("/api/auth/logout")
+def logout(request: Request, response: Response) -> dict[str, bool]:
+    auth.end_session(request, response)
+    return {"ok": True}
+
+
+@app.get("/api/auth/me")
+def me(request: Request) -> dict[str, Any]:
+    user = auth.current_user(request)
+    if user is None:
+        raise HTTPException(401, "Connexion requise.")
+    return {"auth": config.AUTH_ENABLED, "user": auth.public(user)}
+
+
+class PasswordIn(BaseModel):
+    current: str = Field(..., min_length=1, max_length=200)
+    new: str = Field(..., max_length=200)
+
+
+@app.post("/api/auth/password")
+def change_password(body: PasswordIn, request: Request) -> dict[str, Any]:
+    if not config.AUTH_ENABLED:
+        raise HTTPException(400, "Les comptes ne sont pas activés sur cette installation.")
+    user = request.state.user
+    full = db.get_user_for_login(user["username"])
+    if not full or not auth.verify_password(body.current, full["password_hash"]):
+        raise HTTPException(400, "Mot de passe actuel incorrect.")
+    auth.check_new_password(body.new, user["username"])
+    if body.new == body.current:
+        raise HTTPException(400, "Choisis un mot de passe différent de l'actuel.")
+    db.update_user(user["id"], password_hash=auth.hash_password(body.new), must_change=False)
+    db.delete_user_sessions(user["id"], keep=auth.session_hash(request))  # déconnecte ses autres appareils
+    return {"user": auth.public(db.get_user(user["id"]) or user)}
+
+
+class UserIn(BaseModel):
+    username: str = Field(..., pattern=r"^[\w.-]{2,32}$")
+    is_admin: bool = False
+
+
+class UserPatch(BaseModel):
+    is_admin: bool | None = None
+    active: bool | None = None
+
+
+@app.get("/api/users")
+def users(_: dict = Depends(require_admin)) -> list[dict[str, Any]]:
+    return [auth.public(u) for u in db.list_users()]
+
+
+@app.post("/api/users")
+def create_user(body: UserIn, _: dict = Depends(require_admin)) -> dict[str, Any]:
+    if db.get_user_for_login(body.username):
+        raise HTTPException(409, "Ce nom d'utilisateur existe déjà.")
+    password = auth.temporary_password()
+    user = db.create_user(body.username, auth.hash_password(password), is_admin=body.is_admin, must_change=True)
+    # Mot de passe provisoire : affiché une seule fois à l'administrateur, à transmettre à la personne.
+    return {"user": auth.public(user), "password": password}
+
+
+@app.patch("/api/users/{user_id}")
+def update_user(user_id: int, body: UserPatch, admin: dict = Depends(require_admin)) -> dict[str, Any]:
+    target = db.get_user(user_id)
+    if not target:
+        raise HTTPException(404, "Compte introuvable.")
+    fields = body.model_dump(exclude_none=True)
+    if user_id == admin["id"] and (fields.get("is_admin") is False or fields.get("active") is False):
+        raise HTTPException(400, "Tu ne peux pas retirer tes propres droits ni désactiver ton propre compte.")
+    user = db.update_user(user_id, **fields)
+    if fields.get("active") is False:
+        db.delete_user_sessions(user_id)
+    return auth.public(user or target)
+
+
+@app.post("/api/users/{user_id}/reset")
+def reset_user_password(user_id: int, admin: dict = Depends(require_admin)) -> dict[str, Any]:
+    if not db.get_user(user_id):
+        raise HTTPException(404, "Compte introuvable.")
+    if user_id == admin["id"]:
+        raise HTTPException(400, "Pour ton propre compte, utilise « Changer mon mot de passe ».")
+    password = auth.temporary_password()
+    user = db.update_user(user_id, password_hash=auth.hash_password(password), must_change=True)
+    db.delete_user_sessions(user_id)
+    return {"user": auth.public(user or {}), "password": password}
+
+
+@app.delete("/api/users/{user_id}")
+def delete_user(user_id: int, admin: dict = Depends(require_admin)) -> dict[str, bool]:
+    if user_id == admin["id"]:
+        raise HTTPException(400, "Tu ne peux pas supprimer ton propre compte.")
+    db.delete_user(user_id)
+    return {"ok": True}
+
+
+@app.get("/api/admin/public-url")
+async def public_url(_: dict = Depends(require_admin)) -> dict[str, Any]:
+    """Adresse publique du site via le tunnel Cloudflare (conteneur « tunnel »)."""
+    if not config.TUNNEL_METRICS_URL:
+        return {"status": "off", "url": config.PUBLIC_URL or None, "temporary": False}
+    base = config.TUNNEL_METRICS_URL
+    try:
+        async with httpx.AsyncClient(timeout=3) as client:
+            ready = await client.get(base + "/ready")
+            status = "up" if ready.status_code == 200 else "down"
+            quick = (await client.get(base + "/quicktunnel")).json()
+            if quick.get("hostname"):
+                return {"status": status, "url": f"https://{quick['hostname']}", "temporary": True}
+            url = config.PUBLIC_URL or None
+            if not url:
+                conf = (await client.get(base + "/config")).json()
+                ingress = (conf.get("config") or {}).get("ingress") or []
+                host = next((r["hostname"] for r in ingress if r.get("hostname") and "*" not in r["hostname"]), None)
+                url = f"https://{host}" if host else None
+            warning = None
+            if status == "up" and not url:
+                # Tunnel nommé connecté mais sans route : Cloudflare ne sait pas quelle adresse publier.
+                warning = (
+                    "Tunnel connecté, mais aucune adresse ne lui est associée : dans Cloudflare (Zero Trust → "
+                    "Networks → Tunnels → ce tunnel), ajoute une route publique (« Public Hostname » / « Published "
+                    "application route ») vers le service HTTP app:8765."
+                )
+            return {"status": status, "url": url, "temporary": False, "warning": warning}
+    except (httpx.HTTPError, ValueError):
+        return {"status": "down", "url": config.PUBLIC_URL or None, "temporary": False}
 
 
 # =========================================================================== Ollama & réglages
@@ -156,7 +335,8 @@ class SettingsIn(BaseModel):
 
 
 @app.put("/api/settings")
-def put_settings(body: SettingsIn) -> dict[str, Any]:
+def put_settings(body: SettingsIn, _: dict = Depends(require_admin)) -> dict[str, Any]:
+    # Réglages communs à tout le monde (modèle, mémoire…) : réservés aux administrateurs.
     return db.update_settings(body.model_dump(exclude_none=True))
 
 

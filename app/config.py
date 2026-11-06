@@ -25,7 +25,22 @@ DEFAULT_SETTINGS: dict[str, object] = {
     "current_semester": "",  # ex. "S7" : semestre déplié en premier dans la bibliothèque
 }
 
-ALLOWED_IMPORT_EXT = {".pdf", ".docx", ".pptx", ".doc", ".ppt", ".txt", ".md", ".markdown"}
+def _flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on", "oui"}
+
+
+# Comptes obligatoires (outil partagé, par ex. dans Docker derrière un tunnel). Désactivé en local.
+AUTH_ENABLED = _flag("DL_AUTH")
+SESSION_DAYS = int(os.environ.get("DL_SESSION_DAYS", "30"))
+# Premier administrateur, créé au démarrage si la base n'a encore aucun compte.
+ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin").strip() or "admin"
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
+IN_DOCKER = _flag("DL_DOCKER")
+# Tunnel Cloudflare (conteneur « tunnel ») : son serveur de métriques donne l'adresse publique.
+TUNNEL_METRICS_URL = os.environ.get("TUNNEL_METRICS_URL", "").rstrip("/")
+PUBLIC_URL = os.environ.get("PUBLIC_URL", "").strip().rstrip("/")
+
+ALLOWED_IMPORT_EXT ={".pdf", ".docx", ".pptx", ".doc", ".ppt", ".txt", ".md", ".markdown"}
 MAX_UPLOAD_MB = 200
 
 

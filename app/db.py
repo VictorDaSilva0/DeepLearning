@@ -84,7 +84,30 @@ CREATE TABLE IF NOT EXISTS llm_cache (
     value       TEXT NOT NULL,
     created_at  TEXT NOT NULL
 );
+
+-- Comptes (quand l'outil est partagé : DL_AUTH=1). La bibliothèque reste commune à tous.
+CREATE TABLE IF NOT EXISTS users (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    username       TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    password_hash  TEXT NOT NULL,
+    is_admin       INTEGER NOT NULL DEFAULT 0,
+    active         INTEGER NOT NULL DEFAULT 1,
+    must_change    INTEGER NOT NULL DEFAULT 0,  -- mot de passe provisoire à remplacer
+    created_at     TEXT NOT NULL,
+    last_login     TEXT
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    token_hash  TEXT PRIMARY KEY,               -- SHA-256 du jeton (le jeton lui-même n'est pas stocké)
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at  TEXT NOT NULL,
+    expires_at  TEXT NOT NULL,
+    last_seen   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 """
+
+USER_COLUMNS = "id, username, is_admin, active, must_change, created_at, last_login"
 
 DOC_LIST_COLUMNS = (
     "id, subject_id, parent_id, kind, title, source_name, created_at, updated_at, "
@@ -527,3 +550,88 @@ def cache_set(key: str, value: str) -> None:
         conn.execute(
             "INSERT OR REPLACE INTO llm_cache(key, value, created_at) VALUES(?, ?, ?)", (key, value, now())
         )
+
+
+# --------------------------------------------------------------------------- comptes & sessions
+
+def count_users() -> int:
+    with connect() as conn:
+        return conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+
+
+def list_users() -> list[dict[str, Any]]:
+    with connect() as conn:
+        rows = conn.execute(f"SELECT {USER_COLUMNS} FROM users ORDER BY username COLLATE NOCASE").fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_user(user_id: int) -> dict[str, Any] | None:
+    with connect() as conn:
+        row = conn.execute(f"SELECT {USER_COLUMNS} FROM users WHERE id = ?", (user_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def get_user_for_login(username: str) -> dict[str, Any] | None:
+    """Avec l'empreinte du mot de passe : à n'utiliser que pour vérifier un mot de passe."""
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+    return dict(row) if row else None
+
+
+def create_user(username: str, password_hash: str, is_admin: bool = False, must_change: bool = False) -> dict[str, Any]:
+    with connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO users(username, password_hash, is_admin, must_change, created_at) VALUES(?, ?, ?, ?, ?)",
+            (username, password_hash, int(is_admin), int(must_change), now()),
+        )
+        row = conn.execute(f"SELECT {USER_COLUMNS} FROM users WHERE id = ?", (cur.lastrowid,)).fetchone()
+    return dict(row)
+
+
+def update_user(user_id: int, **fields: Any) -> dict[str, Any] | None:
+    allowed = {"password_hash", "is_admin", "active", "must_change", "last_login"}
+    fields = {k: (int(v) if isinstance(v, bool) else v) for k, v in fields.items() if k in allowed}
+    if fields:
+        sets = ", ".join(f"{k} = ?" for k in fields)
+        with connect() as conn:
+            conn.execute(f"UPDATE users SET {sets} WHERE id = ?", (*fields.values(), user_id))
+    return get_user(user_id)
+
+
+def delete_user(user_id: int) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+
+
+def create_session(token_hash: str, user_id: int, expires_at: str) -> None:
+    ts = now()
+    with connect() as conn:
+        conn.execute("DELETE FROM sessions WHERE expires_at < ?", (ts,))  # ménage des sessions expirées
+        conn.execute(
+            "INSERT INTO sessions(token_hash, user_id, created_at, expires_at, last_seen) VALUES(?, ?, ?, ?, ?)",
+            (token_hash, user_id, ts, expires_at, ts),
+        )
+
+
+def session_user(token_hash: str) -> dict[str, Any] | None:
+    """Compte actif lié à une session non expirée (ou None)."""
+    with connect() as conn:
+        row = conn.execute(
+            f"SELECT {', '.join('u.' + c.strip() for c in USER_COLUMNS.split(','))}, s.last_seen AS session_seen "
+            "FROM sessions s JOIN users u ON u.id = s.user_id "
+            "WHERE s.token_hash = ? AND s.expires_at > ? AND u.active = 1",
+            (token_hash, now()),
+        ).fetchone()
+        if row and row["session_seen"][:13] != now()[:13]:  # au plus une écriture par heure
+            conn.execute("UPDATE sessions SET last_seen = ? WHERE token_hash = ?", (now(), token_hash))
+    return dict(row) if row else None
+
+
+def delete_session(token_hash: str) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
+
+
+def delete_user_sessions(user_id: int, keep: str | None = None) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM sessions WHERE user_id = ? AND token_hash != ?", (user_id, keep or ""))

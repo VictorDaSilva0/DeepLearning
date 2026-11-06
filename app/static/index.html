@@ -5,12 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>DeepLearning — atelier de révision</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧠</text></svg>">
-  <link rel="stylesheet" href="/static/style.css?v=9">
+  <link rel="stylesheet" href="/static/style.css?v=11">
   <!-- KaTeX (formules) : optionnel, chargé depuis un CDN quand Internet est disponible. -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
-  <script defer src="/static/app.js?v=9"></script>
+  <script defer src="/static/app.js?v=11"></script>
 </head>
 <body>
 <div id="app" class="layout">
@@ -50,6 +50,9 @@
       <span id="ollama-label" class="muted">Connexion à Ollama…</span>
       <button id="btn-settings" class="icon-btn" title="Réglages de l'IA">⚙</button>
     </div>
+    <button id="btn-account" class="account-chip" title="Mon compte" hidden>
+      <span class="avatar" id="account-avatar"></span><span id="account-name" class="name"></span><span class="muted">⋯</span>
+    </button>
   </aside>
 
   <!-- ============================================================ Zone centrale -->
@@ -377,7 +380,7 @@
     </label>
     <div id="imp-drop" class="dropzone">
       <div>Glisse des fichiers ici ou <button type="button" class="link" id="imp-browse">parcours</button></div>
-      <small>PDF · .docx · .doc · .pptx · .ppt · .txt · .md — les anciens .doc / .ppt sont convertis avec Microsoft Office</small>
+      <small>PDF · .docx · .doc · .pptx · .ppt · .txt · .md — les anciens .doc / .ppt sont convertis automatiquement</small>
     </div>
     <ul id="imp-list" class="imp-list"></ul>
     <footer>
@@ -484,6 +487,7 @@
       <input type="checkbox" id="set-think">
       <span>Mode réflexion (le modèle « réfléchit » avant de répondre : plus lent, parfois plus juste)</span>
     </label>
+    <p id="set-readonly" class="banner info" hidden>Réglages communs à tout le monde : seul un administrateur peut les modifier.</p>
     <footer>
       <span class="spacer"></span>
       <button value="cancel" class="btn">Annuler</button>
@@ -491,6 +495,65 @@
     </footer>
   </form>
 </dialog>
+
+<!-- Compte : mot de passe, et pour les administrateurs l'adresse publique et les comptes des amis -->
+<dialog id="dlg-account" class="dialog wide-dialog">
+  <form method="dialog" id="account-form">
+    <h3>Mon compte · <span id="acc-username"></span></h3>
+    <section class="acc-section">
+      <h4>Changer mon mot de passe</h4>
+      <div class="acc-grid">
+        <input type="password" id="acc-current" placeholder="Mot de passe actuel" autocomplete="current-password">
+        <input type="password" id="acc-new" placeholder="Nouveau (8 caractères min.)" autocomplete="new-password">
+        <input type="password" id="acc-new2" placeholder="Confirmer le nouveau" autocomplete="new-password">
+        <button type="button" id="acc-save-pw" class="btn">Changer</button>
+      </div>
+    </section>
+    <section class="acc-section" id="acc-admin" hidden>
+      <h4>Adresse à donner à tes amis</h4>
+      <div class="public-url" id="acc-url"></div>
+      <h4>Comptes</h4>
+      <ul class="user-list" id="acc-users"></ul>
+      <div class="acc-grid new-user">
+        <input id="acc-new-user" placeholder="Identifiant du nouveau compte (ex. lucas)" maxlength="32" autocomplete="off">
+        <label class="check"><input type="checkbox" id="acc-new-admin"> <span>Admin</span></label>
+        <button type="button" id="acc-create" class="btn primary">＋ Créer</button>
+      </div>
+      <div id="acc-secret" class="secret-box" hidden></div>
+    </section>
+    <footer>
+      <button type="button" id="acc-logout" class="btn danger">⎋ Se déconnecter</button>
+      <span class="spacer"></span>
+      <button value="cancel" class="btn">Fermer</button>
+    </footer>
+  </form>
+</dialog>
+
+<!-- Connexion (outil partagé) -->
+<div id="login-screen" class="login-screen" hidden>
+  <form id="login-form" class="login-card" autocomplete="on">
+    <div class="brand"><span class="brand-logo">🧠</span><span><b>DeepLearning</b><small>atelier de révision</small></span></div>
+    <div id="login-step-auth">
+      <label class="field">Identifiant
+        <input id="login-user" name="username" autocomplete="username" required maxlength="60">
+      </label>
+      <label class="field">Mot de passe
+        <input id="login-pass" name="password" type="password" autocomplete="current-password" required maxlength="200">
+      </label>
+    </div>
+    <div id="login-step-change" hidden>
+      <p class="muted small">Tu utilises un mot de passe provisoire : choisis le tien (8 caractères minimum).</p>
+      <label class="field">Nouveau mot de passe
+        <input id="login-new" type="password" autocomplete="new-password" maxlength="200">
+      </label>
+      <label class="field">Confirmer
+        <input id="login-new2" type="password" autocomplete="new-password" maxlength="200">
+      </label>
+    </div>
+    <p id="login-error" class="login-error" hidden></p>
+    <button type="submit" id="login-submit" class="btn primary full">Se connecter</button>
+  </form>
+</div>
 
 <div id="toasts" class="toasts"></div>
 </body>

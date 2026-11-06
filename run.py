@@ -105,6 +105,13 @@ def main() -> None:
 
     if port_in_use(config.HOST, config.PORT):
         state, info = running_server(url)
+        if info.get("docker"):
+            # Version Docker (docker compose) : elle se met à jour avec « docker compose up -d --build »,
+            # et ses numéros de processus sont ceux du conteneur — surtout ne rien arrêter ici.
+            print(f"DeepLearning tourne dans Docker sur {url}")
+            if open_browser:
+                webbrowser.open(url)
+            return
         if state == "current":
             print(f"DeepLearning est déjà lancé (à jour) sur {url}")
             if open_browser:

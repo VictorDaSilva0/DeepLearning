@@ -1,11 +1,14 @@
-"""Conversions via Microsoft Office (Windows) :
+"""Conversions des fichiers Office :
 
 - Word / PowerPoint → PDF, pour afficher le cours d'origine dans l'outil ;
 - anciens formats .doc / .ppt → .docx / .pptx, pour pouvoir les importer.
 
-On pilote Word / PowerPoint par COM depuis un petit script PowerShell : aucune dépendance Python
-supplémentaire, et un processus séparé qu'on peut interrompre si Office se bloque. Les macros des
-fichiers ouverts sont désactivées.
+Deux moteurs :
+
+- **LibreOffice** (`soffice --headless`), utilisé sous Linux — donc dans Docker — ou si DL_OFFICE=libreoffice ;
+- **Microsoft Office** sous Windows, piloté par COM depuis un petit script PowerShell : aucune dépendance
+  Python supplémentaire, et un processus séparé qu'on peut interrompre si Office se bloque. Les macros
+  des fichiers ouverts sont désactivées.
 
 Un Word non activé (« Produit sans licence ») ouvre et lit les documents mais se bloque dès qu'on lui
 demande d'enregistrer ou d'exporter. Pour les .doc on se contente donc de lire leur contenu (format
@@ -16,8 +19,11 @@ from __future__ import annotations
 
 import base64
 import os
+import shutil
+import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import zipfile
 from datetime import datetime, timedelta
@@ -89,8 +95,63 @@ class ConversionError(Exception):
     pass
 
 
+def _soffice() -> str | None:
+    return shutil.which("soffice") or shutil.which("libreoffice")
+
+
+def _engine() -> str | None:
+    """« lo » (LibreOffice), « ms » (Microsoft Office par COM) ou None."""
+    if os.environ.get("DL_OFFICE", "").strip().lower() == "libreoffice" or sys.platform != "win32":
+        return "lo" if _soffice() else None
+    return "ms"
+
+
 def available() -> bool:
-    return sys.platform == "win32"
+    return _engine() is not None
+
+
+# Filtres d'export LibreOffice selon l'extension voulue.
+_LO_FILTERS = {
+    ".pdf": "pdf",
+    ".docx": "docx:MS Word 2007 XML",
+    ".pptx": "pptx:Impress MS PowerPoint 2007 XML",
+}
+
+
+def _lo_convert(source: Path, target: Path, timeout: int) -> None:
+    """Conversion par LibreOffice sans interface. Un fichier protégé par mot de passe échoue (pas de saisie)."""
+    soffice = _soffice()
+    if not soffice:
+        raise ConversionError("LibreOffice est introuvable.")
+    profile = Path(tempfile.gettempdir()) / "dl-libreoffice-profile"  # profil réutilisé : démarrages plus rapides
+    with tempfile.TemporaryDirectory(prefix="dl-lo-") as outdir:
+        cmd = [
+            soffice,
+            f"-env:UserInstallation={profile.as_uri()}",
+            "--headless", "--norestore", "--nologo", "--nodefault", "--nolockcheck",
+            "--convert-to", _LO_FILTERS[target.suffix.lower()],
+            "--outdir", outdir,
+            str(source.resolve()),
+        ]
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace",
+            start_new_session=(os.name == "posix"),
+        )
+        try:
+            out, err = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            if os.name == "posix":
+                os.killpg(proc.pid, signal.SIGKILL)  # soffice lance soffice.bin : on arrête tout le groupe
+            else:
+                proc.kill()
+            proc.communicate()
+            raise ConversionError("LibreOffice met trop de temps à convertir le fichier.") from exc
+        produced = Path(outdir) / (source.stem + target.suffix)
+        if not produced.exists():
+            detail = (err or out or "").strip().splitlines()
+            hint = detail[-1][:300] if detail else "fichier illisible ou protégé par un mot de passe"
+            raise ConversionError(f"Conversion impossible (LibreOffice) : {hint}")
+        shutil.move(str(produced), target)
 
 
 def preview_path(source: Path) -> Path:
@@ -155,7 +216,7 @@ def _run(script: str, source: Path, out: Path, timeout: int, fmt: int = 0) -> No
 def _check(source: Path, allowed: set[str] | dict) -> str:
     ext = source.suffix.lower()
     if not available():
-        raise ConversionError("Cette conversion nécessite Microsoft Office sous Windows.")
+        raise ConversionError("Conversion impossible : ni Microsoft Office (Windows) ni LibreOffice ne sont disponibles.")
     if ext not in allowed:
         raise ConversionError(f"Conversion non prise en charge pour {ext}.")
     return ext
@@ -171,7 +232,10 @@ def to_pdf(source: Path, timeout: int = 180) -> Path:
     with _lock:
         if target.exists() and target.stat().st_mtime >= source.stat().st_mtime:
             return target
-        _run(_PDF_SCRIPTS[ext], source, tmp, timeout, fmt=32)
+        if _engine() == "lo":
+            _lo_convert(source, tmp, timeout)
+        else:
+            _run(_PDF_SCRIPTS[ext], source, tmp, timeout, fmt=32)
         tmp.replace(target)
     return target
 
@@ -181,6 +245,9 @@ def to_modern(source: Path, timeout: int = 120) -> Path:
     ext = _check(source, LEGACY)
     target = source.with_name(source.stem + ".converted" + LEGACY[ext])
     with _lock:
+        if _engine() == "lo":
+            _lo_convert(source, target, timeout)
+            return target
         if ext == ".ppt":
             _run(_POWERPOINT, source, target, timeout, fmt=24)
             return target

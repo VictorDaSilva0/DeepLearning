@@ -26,6 +26,61 @@ Le serveur se **recharge tout seul** quand le code Python change (quelques secon
 
 Options : `python run.py --no-browser`, `--no-reload`. Variables d'environnement : `DEEPLEARNING_PORT` (défaut 8765), `DEEPLEARNING_DATA` (dossier des données), `OLLAMA_URL` (défaut `http://127.0.0.1:11434`).
 
+## Partager l'outil avec tes amis (Docker)
+
+L'outil et sa base tournent dans Docker sur ton PC. Un tunnel Cloudflare le publie en HTTPS **sans ouvrir de port** sur ta box. Chacun a son compte, et la bibliothèque est commune.
+
+Prérequis : [Docker Desktop](https://www.docker.com/products/docker-desktop/) et Ollama (sur le PC, pour la carte graphique).
+
+1. Copie `.env.example` en `.env` et choisis le mot de passe administrateur (`ADMIN_PASSWORD`). Si tu le laisses vide, un mot de passe provisoire est affiché par `docker compose logs app`.
+2. Ferme la version locale (fenêtre de `lancer.bat`), puis lance :
+
+   ```bash
+   docker compose up -d --build
+   ```
+
+   Au premier démarrage, ta bibliothèque actuelle (`data/`) est **recopiée** dans le volume Docker `app-data`. Le dossier `data/` n'est plus modifié ensuite : c'est la version Docker qui fait foi.
+3. Ouvre <http://127.0.0.1:8765> et connecte-toi. Dans **Mon compte** (en bas de la barre latérale) :
+   - **Adresse à donner à tes amis** : l'adresse publique, avec un bouton pour la copier ;
+   - **Comptes** : crée un compte par ami. Un mot de passe provisoire s'affiche une seule fois : transmets-le, il en choisira un autre à sa première connexion. Tu peux aussi désactiver un compte, réinitialiser un mot de passe ou donner les droits d'administrateur.
+
+Seuls les administrateurs peuvent changer les réglages de l'IA (modèle, mémoire…), qui sont communs à tout le monde.
+
+**Adresse.** Sans autre réglage, l'adresse est **temporaire** (`https://….trycloudflare.com`) : elle change à chaque redémarrage du PC ou de Docker, et la nouvelle s'affiche dans Mon compte.
+
+Pour une **adresse fixe**, il faut un domaine ajouté à un compte Cloudflare gratuit. Deux possibilités :
+- un **sous-domaine d'un domaine que tu as déjà sur Cloudflare**, par exemple `revision.stratbook.dpdns.org` : rien à acheter ni à attendre ;
+- un **nouveau domaine**, par exemple un domaine gratuit [DigitalPlat](https://domain.digitalplat.org) en `.dpdns.org`, ajouté à Cloudflare. Compte quelques heures avant qu'il soit actif.
+
+Ensuite :
+
+1. Dans Cloudflare, ouvre **Zero Trust → Networks → Tunnels** et crée un tunnel « Cloudflared » nommé `deeplearning`. Copie son **jeton** : la longue chaîne après `--token` dans la commande d'installation proposée.
+2. Dans ce tunnel, ajoute un **Public Hostname** :
+   - sous-domaine : par exemple `revision` ;
+   - domaine : le tien ;
+   - service : `HTTP`, URL `app:8765`.
+3. Dans `.env`, mets `CLOUDFLARE_TUNNEL_TOKEN=<le jeton>`, puis relance `docker compose up -d`.
+
+L'adresse fixe apparaît dans Mon compte. Pour revenir à l'adresse temporaire, vide `CLOUDFLARE_TUNNEL_TOKEN` et relance.
+
+Une adresse DuckDNS (`duckdns.org`) ne marche pas avec un tunnel : Cloudflare n'accepte que les domaines ajoutés à ton compte. DuckDNS demanderait d'ouvrir le port 443 de la box vers le PC.
+
+**À savoir**
+- Un domaine tout neuf met de quelques minutes à quelques heures à être visible partout, puis Cloudflare active son certificat HTTPS. Sur un réseau filtré (pare-feu d'entreprise ou d'école, ex. FortiGate), un domaine récent peut aussi être bloqué (« Newly Observed Domain ») pendant quelques jours. Depuis ce PC, utilise alors <http://127.0.0.1:8765>.
+- L'outil n'est joignable que quand le PC est allumé et que Docker tourne. Active « Start Docker Desktop when you sign in » dans les réglages de Docker Desktop : les conteneurs redémarrent alors tout seuls.
+- Les fichiers Word / PowerPoint sont convertis par **LibreOffice**, inclus dans l'image. Pas besoin de Microsoft Office.
+- Les générations de l'IA passent une par une sur la carte graphique : si plusieurs personnes génèrent en même temps, elles attendent leur tour.
+- Le jeton du tunnel donne le droit de publier sur ton domaine : garde `.env` pour toi.
+
+| Besoin | Commande |
+| --- | --- |
+| Démarrer / mettre à jour après une modification du code | `docker compose up -d --build` |
+| Voir les journaux (mot de passe provisoire, erreurs) | `docker compose logs -f app` |
+| Arrêter | `docker compose down` (les données restent dans le volume) |
+| Sauvegarder la base | `docker compose exec app python -c "import sqlite3; sqlite3.connect('/data/deeplearning.db').backup(sqlite3.connect('/data/sauvegarde.db'))"` puis `docker compose cp app:/data/sauvegarde.db .` |
+
+`lancer.bat` reste utilisable pour un usage local sans Docker, sans comptes, avec le dossier `data/`. Si la version Docker tourne déjà, il ouvre simplement le navigateur dessus.
+
 ## Fonctionnalités
 
 | Zone | Ce qu'on peut faire |
@@ -58,11 +113,14 @@ app/
   prompts.py     consignes envoyées au modèle
   render.py      Markdown → HTML assaini (aperçu, export)
   srs.py         planification des flashcards
-  office.py      conversions via Office : Word / PowerPoint → PDF (aperçu), .doc / .ppt → .docx / .pptx
+  office.py      conversions Word / PowerPoint → PDF (aperçu), .doc / .ppt → .docx / .pptx
+                 (LibreOffice sous Linux/Docker, Microsoft Office sous Windows)
+  auth.py        comptes et sessions de l'outil partagé (DL_AUTH=1)
   db.py          SQLite (data/deeplearning.db)
   static/        interface web (HTML/CSS/JS sans build)
 run.py           lance le serveur et ouvre le navigateur
 lancer.bat       lanceur Windows
+Dockerfile, docker-compose.yml, docker/entrypoint.py   version Docker partagée (outil + tunnel Cloudflare)
 ```
 
 ## Idées pour la suite
