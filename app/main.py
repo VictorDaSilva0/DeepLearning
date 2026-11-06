@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import unicodedata
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -21,7 +22,7 @@ from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import __version__, auth, config, db, importers, live, llm, office, prompts, render, srs
+from . import __version__, attachments, auth, config, db, importers, live, llm, office, prompts, render, srs
 
 log = logging.getLogger("deeplearning")
 LOADED_CODE = config.code_fingerprint()  # version du code chargée par ce processus
@@ -74,10 +75,11 @@ app.mount("/static", StaticFiles(directory=config.STATIC_DIR), name="static")
 
 KINDS = {
     "cours", "td", "tp", "note", "fiche", "resume", "exercices", "qcm", "flashcards",
-    "explication", "glossaire", "plan", "questions", "corrige", "rendu", "relecture", "annale",
+    "explication", "glossaire", "plan", "questions", "corrige", "rendu", "relecture", "annale", "examen",
 }
-# cours = CM ; rendu = compte-rendu de TD/TP ; annale = contrôle d'une année précédente
-SOURCE_KINDS = {"cours", "td", "tp", "annale", "rendu"}
+# cours = CM ; rendu = compte-rendu de TD/TP ; annale = contrôle d'une année précédente ;
+# examen = examen d'entraînement (rédigé par l'IA, ou ajouté à la main)
+SOURCE_KINDS = {"cours", "td", "tp", "annale", "examen", "rendu"}
 
 
 def _number_in(text: str, prefix: str) -> str | None:
@@ -999,6 +1001,32 @@ class ChatMessage(BaseModel):
 class ChatIn(BaseModel):
     document_id: int | None = None
     messages: list[ChatMessage]
+    attachments: list[str] = Field(default_factory=list, max_length=12)  # fichiers donnés à l'IA (/api/attachments)
+
+
+def _passages(texts: list[tuple[str, str]], query: str, budget: int) -> tuple[list[tuple[str, str]], bool]:
+    """Partage le contexte entre plusieurs textes ; garde les passages les plus utiles de chacun."""
+    out: list[tuple[str, str]] = []
+    partial = False
+    for (name, text), share in zip(texts, _share_budget([len(t) for _, t in texts], max(3000, budget))):
+        context, cut = llm.select_passages(text, query, max(1500, share))
+        out.append((name, context))
+        partial = partial or cut
+    return out, partial
+
+
+def _subject_named(name: Any, fallback: int | None) -> int | None:
+    """Matière désignée par l'IA (« Réseaux »…), sinon celle du cours ouvert."""
+    wanted = str(name or "").strip().casefold()
+    if wanted:
+        subjects = db.list_subjects()
+        current = db.get_settings().get("current_semester") or ""
+        exact = [s for s in subjects if s["name"].casefold() == wanted]
+        close = [s for s in subjects if wanted in s["name"].casefold() or s["name"].casefold() in wanted]
+        for group in (exact, close):
+            if group:
+                return sorted(group, key=lambda s: (s.get("semester") or "") != current)[0]["id"]
+    return fallback
 
 
 @app.post("/api/chat")
@@ -1017,21 +1045,179 @@ async def chat(body: ChatIn) -> StreamingResponse:
         kept.append(m)
     kept.reverse()
 
-    system = prompts.SYSTEM_TUTOR
-    if body.document_id is not None:
-        doc = _get_doc_or_404(body.document_id)
-        budget = llm.input_budget_chars(settings, 2500) - sum(len(m.content) for m in kept)
-        query = " ".join(m.content for m in kept if m.role == "user")[-2000:]
-        context, partial = llm.select_passages(doc["content"] or "", query, max(3000, budget))
-        system = prompts.chat_system_prompt(doc["title"], context, partial)
-
-    messages = [{"role": "system", "content": system}] + [{"role": m.role, "content": m.content} for m in kept]
+    doc = _get_doc_or_404(body.document_id) if body.document_id is not None else None
+    files = [a for a in (attachments.load(i) for i in dict.fromkeys(body.attachments)) if a]
+    texts = ([(doc["title"], doc["content"] or "")] if doc else []) + [(f["name"], f["text"]) for f in files if f["text"].strip()]
+    images = [img for f in files for img in f.get("images") or []][:8]
+    query = " ".join(m.content for m in kept if m.role == "user")[-2000:]
+    budget = llm.input_budget_chars(settings, 2500) - sum(len(m.content) for m in kept)
+    contexts, partial = _passages(texts, query, budget)
+    current = settings.get("current_semester") or ""
+    subjects = [s["name"] for s in sorted(db.list_subjects(), key=lambda s: (s.get("semester") or "") != current)]
+    system = prompts.chat_system_prompt(
+        contexts[0] if doc else None, contexts[1:] if doc else contexts, partial, subjects, len(images)
+    )
+    messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
+    messages += [{"role": m.role, "content": m.content} for m in kept]
+    if images:
+        messages[-1]["images"] = images
+    request = kept[-1].content
 
     async def run() -> AsyncIterator[dict[str, Any]]:
-        async for ev in llm.chat_stream(messages, settings):
+        calls: list[dict[str, Any]] = []
+        async for ev in llm.chat_stream(messages, settings, tools=[prompts.CREATE_TOOL]):
+            if ev["type"] == "tool_call":
+                if ev["name"] == "creer_document":
+                    calls.append(ev["arguments"])
+                continue
             yield ev
+        for n, args in enumerate(calls[:3], start=1):
+            async for ev in _create_from_chat(n, args, doc, files, request, settings):
+                yield ev
 
     return _ndjson(run())
+
+
+def _create_kind(raw: Any, title: str) -> str:
+    """Type de document demandé par l'IA (« examen_blanc » → examen), à défaut d'après le titre."""
+    def plain(s: Any) -> str:
+        s = unicodedata.normalize("NFKD", str(s or "")).encode("ascii", "ignore").decode().casefold()
+        return re.sub(r"[_\-/]+", " ", s).strip()
+
+    for text in (plain(raw), plain(title)):  # « note » n'est retenu que si le titre n'en dit pas plus
+        if text in prompts.CREATE_TYPES and text != "note":
+            return text
+        for pattern, kind in prompts.CREATE_KIND_RULES:
+            if re.search(pattern, text):
+                return kind
+    return "note"
+
+
+async def _create_from_chat(
+    n: int,
+    args: dict[str, Any],
+    doc: dict[str, Any] | None,
+    files: list[dict[str, Any]],
+    request: str,
+    settings: dict[str, Any],
+) -> AsyncIterator[dict[str, Any]]:
+    """L'IA a décidé de créer un document : rédaction (en direct dans la discussion) puis ajout à la bibliothèque."""
+    log.info("Document demandé à l'IA : %s", {k: str(v)[:120] for k, v in args.items()})
+    title = re.sub(r"\s+", " ", str(args.get("titre") or "")).strip()[:200]
+    kind = _create_kind(args.get("type"), title)
+    spec = prompts.CREATE_TYPES[kind]
+    title = title or f"{spec['label']} — {request.strip()[:60]}"
+    instructions = str(args.get("consignes") or request).strip()[:4000]
+    subject_id = _subject_named(args.get("matiere"), doc["subject_id"] if doc else None)
+    yield {"type": "create", "n": n, "kind": spec["kind"], "title": title}
+    try:
+        names = ([doc["title"]] if doc else []) + [f["name"] for f in files]
+        texts = ([(doc["title"], doc["content"] or "")] if doc else []) + [(f["name"], f["text"]) for f in files if f["text"].strip()]
+        images = [img for f in files for img in f.get("images") or []][:8]
+        # Les documents dérivés (fiche, QCM…) se rangent sous le cours ouvert ; un cours, TD, TP ou examen à part.
+        parent_id = doc["id"] if doc and spec["kind"] not in SOURCE_KINDS else None
+
+        if spec.get("task"):  # QCM et flashcards : sortie structurée, comme dans « Générer »
+            task = spec["task"]
+            tspec = prompts.TASKS[task]
+            try:
+                count = max(1, min(60, int(args.get("nombre") or spec["count"])))
+            except (TypeError, ValueError):
+                count = spec["count"]
+            sources, _ = _passages(texts, f"{instructions} {request}", llm.input_budget_chars(settings, tspec["reserve"]))
+            source = "\n\n".join(f"## {t}\n\n{x}" for t, x in sources) or (
+                f"(Pas de document fourni : appuie-toi sur tes connaissances.)\nSujet demandé : {instructions}"
+            )
+            gen = GenerateIn(document_id=doc["id"] if doc else 0, task=task, count=count, instructions=instructions)
+            messages = [
+                {"role": "system", "content": prompts.SYSTEM_TUTOR},
+                {"role": "user", "content": prompts.task_user_prompt(task, title, source, count, "moyen", instructions)},
+            ]
+            async for ev in _write_result(gen, tspec, messages, settings, tspec["reserve"], title=title,
+                                          short_title=title, subject_id=subject_id, parent_id=parent_id):
+                if ev["type"] == "token":
+                    yield {"type": "create_token", "n": n, "text": ev["text"]}
+                elif ev["type"] == "done":
+                    yield {"type": "created", "n": n, "document": ev["document"], "warning": ev.get("warning")}
+            return
+
+        reserve = spec["reserve"]
+        sources, _ = _passages(texts, f"{instructions} {request}", llm.input_budget_chars(settings, reserve)) if texts else ([], False)
+        user: dict[str, Any] = {"role": "user", "content": prompts.create_prompt(kind, title, instructions, sources, request, len(images))}
+        if images:
+            user["images"] = images
+        parts: list[str] = []
+        info: dict[str, Any] = {}
+        async for ev in llm.chat_stream(
+            [{"role": "system", "content": prompts.SYSTEM_AUTHOR}, user], settings, num_predict=reserve + 1500, think=False
+        ):
+            if ev["type"] == "token":
+                parts.append(ev["text"])
+                yield {"type": "create_token", "n": n, "text": ev["text"]}
+            elif ev["type"] == "done":
+                info = ev
+        content = re.sub(r"^```(?:markdown|md)?\s*\n(.*?)\n```\s*$", r"\1", "".join(parts).strip(), flags=re.S)
+        if not content:
+            raise ValueError("Le modèle n'a renvoyé aucun texte.")
+        if not content.lstrip().startswith("# "):
+            content = f"# {title}\n\n{content}"
+        data = {"ia": {"demande": instructions, "sources": names}}
+        new_doc = db.create_document(title, content + "\n", spec["kind"], subject_id=subject_id, parent_id=parent_id, data=data)
+        live.notify("docs", doc=new_doc["id"], msg=f"a fait rédiger « {title} » par l'IA")
+        warning = None
+        if info.get("done_reason") == "length":
+            warning = "Le document a été coupé (limite de longueur atteinte) : demande une version plus courte ou en plusieurs parties."
+        yield {"type": "created", "n": n, "document": _listing(new_doc), "warning": warning}
+    except (llm.OllamaError, ValueError) as exc:
+        yield {"type": "create_error", "n": n, "message": str(exc)}
+
+
+@app.post("/api/attachments")
+async def upload_attachments(files: list[UploadFile] = File(...)) -> list[dict[str, Any]]:
+    """Fichiers donnés directement à l'IA : lus et convertis, mais pas ajoutés à la bibliothèque."""
+    await asyncio.to_thread(attachments.cleanup)
+    attachments.ATT_DIR.mkdir(parents=True, exist_ok=True)
+    max_bytes = attachments.MAX_MB * 1024 * 1024
+    vision: bool | None = None
+    out: list[dict[str, Any]] = []
+    for upload in files[:10]:
+        name = Path(upload.filename or "fichier").name
+        ext = Path(name).suffix.lower()
+        if ext not in attachments.ALLOWED_EXT:
+            out.append({"name": name, "error": f"Format non pris en charge ({ext or 'inconnu'})."})
+            continue
+        tmp = attachments.ATT_DIR / f"tmp-{uuid.uuid4().hex}{ext}"
+        size = 0
+        try:
+            with tmp.open("wb") as fh:
+                while chunk := await upload.read(1024 * 1024):
+                    size += len(chunk)
+                    if size > max_bytes:
+                        raise ValueError(f"Fichier trop volumineux (> {attachments.MAX_MB} Mo).")
+                    fh.write(chunk)
+            res = await asyncio.to_thread(attachments.create, tmp, name)
+        except ValueError as exc:
+            out.append({"name": name, "error": str(exc)})
+            continue
+        except Exception as exc:
+            log.warning("Pièce jointe illisible : %s (%s)", name, exc)
+            out.append({"name": name, "error": "Lecture impossible : fichier endommagé ou d'un format non reconnu."})
+            continue
+        finally:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass  # Windows : fichier encore ouvert par le lecteur PDF, effacé au prochain nettoyage
+        if res["images"]:
+            if vision is None:
+                try:
+                    vision = "vision" in await llm.capabilities(await llm.resolve_model(db.get_settings()))
+                except llm.OllamaError:
+                    vision = True
+            if not vision:
+                res["warning"] = "Le modèle choisi ne lit pas les images : choisis un modèle avec la vision dans les réglages."
+        out.append(res)
+    return out
 
 
 @app.post("/api/documents/{doc_id}/ocr")

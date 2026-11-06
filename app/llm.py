@@ -105,10 +105,15 @@ async def chat_stream(
     num_predict: int | None = None,
     think: bool | None = None,
     temperature: float | None = None,
+    tools: list[dict[str, Any]] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
-    """Diffuse la réponse du modèle : événements {type: token|thinking|done}."""
+    """Diffuse la réponse du modèle : événements {type: token|thinking|tool_call|done}.
+    `tools` n'est transmis que si le modèle sait appeler des outils."""
     model = await resolve_model(settings)
     caps = await capabilities(model)
+    if "vision" not in caps:
+        # Modèle sans vision : les images jointes sont ignorées plutôt que de faire échouer la requête.
+        messages = [{k: v for k, v in m.items() if k != "images"} for m in messages]
     options: dict[str, Any] = {
         "num_ctx": int(settings.get("num_ctx") or 16384),
         "temperature": float(settings.get("temperature") if temperature is None else temperature),
@@ -124,6 +129,8 @@ async def chat_stream(
     }
     if fmt is not None:
         payload["format"] = fmt
+    if tools and "tools" in caps:
+        payload["tools"] = tools
     if "thinking" in caps:
         payload["think"] = bool(settings.get("think")) if think is None else bool(think)
 
@@ -148,6 +155,15 @@ async def chat_stream(
                         yield {"type": "thinking", "text": msg["thinking"]}
                     if msg.get("content"):
                         yield {"type": "token", "text": msg["content"]}
+                    for call in msg.get("tool_calls") or []:
+                        fn = call.get("function") or {}
+                        args = fn.get("arguments")
+                        if isinstance(args, str):
+                            try:
+                                args = json.loads(args)
+                            except json.JSONDecodeError:
+                                args = {}
+                        yield {"type": "tool_call", "name": fn.get("name"), "arguments": args if isinstance(args, dict) else {}}
                     if chunk.get("done"):
                         yield {
                             "type": "done",

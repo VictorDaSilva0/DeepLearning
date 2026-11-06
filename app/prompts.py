@@ -183,7 +183,7 @@ TASKS: dict[str, dict] = {
     },
     "similaire": {
         "label": "Sujet d'entraînement",
-        "kind": "exercices",
+        "kind": "examen",
         "reserve": 6500,
         "prompt": (
             "Ce document est le sujet d'un contrôle d'une année précédente. Rédige un NOUVEAU sujet "
@@ -286,6 +286,7 @@ DOC_LABELS = {
     "td": "le sujet de TD (travaux dirigés)",
     "tp": "le sujet de TP (travaux pratiques)",
     "annale": "le sujet de contrôle d'une année précédente",
+    "examen": "le sujet d'examen d'entraînement",
     "rendu": "le compte-rendu rédigé par l'étudiant",
 }
 
@@ -394,11 +395,183 @@ def condense_prompt(part: int, total: int, words: int, chunk: str) -> str:
     )
 
 
-def chat_system_prompt(title: str, context: str, partial: bool) -> str:
-    scope = "des extraits pertinents du" if partial else "le contenu du"
+def chat_system_prompt(
+    doc: tuple[str, str] | None,
+    files: list[tuple[str, str]],
+    partial: bool,
+    subjects: list[str],
+    images: int = 0,
+) -> str:
+    """doc = (titre, extraits) du cours ouvert ; files = (nom, extraits) des fichiers joints à la discussion."""
+    out = SYSTEM_TUTOR
+    scope = "des extraits pertinents" if partial else "le contenu"
+    if doc:
+        out += (
+            f"\n\nTu discutes avec l'étudiant à propos de son cours « {doc[0]} ». Voici {scope} de ce cours :\n"
+            f"<cours>\n{doc[1]}\n</cours>"
+        )
+    if files:
+        blocks = "\n\n".join(f'<document nom="{n.replace(chr(34), chr(39))}">\n{t}\n</document>' for n, t in files)
+        out += f"\n\nL'étudiant t'a aussi donné ces fichiers (ils ne sont pas dans sa bibliothèque) :\n{blocks}"
+    if images:
+        out += f"\n\nIl t'a aussi envoyé {images} image(s) (photo, capture d'écran ou page scannée), jointe(s) à son dernier message."
+    out += (
+        "\n\nRéponds de manière pédagogique et concise. Si la réponse ne se trouve pas dans les documents fournis, "
+        "dis-le, puis réponds avec tes connaissances générales en le signalant. Si l'étudiant te demande de "
+        "l'interroger, pose une question à la fois et corrige ses réponses."
+        "\n\nTu peux aussi CRÉER des documents dans sa bibliothèque avec l'outil creer_document : cours, TD, TP, "
+        "examen d'entraînement (examen blanc), fiche de révision, exercices, QCM, flashcards, résumé ou note. "
+        "Dès que l'étudiant te demande de créer, faire, rédiger, préparer, écrire ou générer l'un de ces documents "
+        "(« fais-moi un cours sur… », « prépare un examen blanc de 2 h », « un TD de 5 exercices », « des flashcards "
+        "sur ce chapitre »…), appelle l'outil au lieu d'écrire le document dans la discussion, puis dis en une "
+        "phrase ce que tu prépares. Le cours ouvert et les fichiers joints sont transmis automatiquement à la "
+        "rédaction : inutile de les recopier dans les consignes. Pour une simple question ou une explication, "
+        "réponds normalement sans créer de document."
+    )
+    if subjects:
+        out += f"\nMatières de l'étudiant : {', '.join(subjects)}."
+    return out
+
+
+# --------------------------------------------------------------------------- création de documents (discussion)
+
+SYSTEM_AUTHOR = (
+    "Tu es un enseignant-auteur expérimenté d'une école d'ingénieurs (informatique, réseaux, systèmes, objets "
+    "connectés). Tu rédiges en français des supports pédagogiques rigoureux, prêts à être distribués : Markdown "
+    "propre (titres, listes, **gras** sur les mots-clés, tableaux, blocs de code pour les commandes), formules en "
+    "LaTeX entre $...$ ou $$...$$. Tu renvoies uniquement le document, en commençant directement par son titre "
+    "(# …), sans phrase d'introduction ni commentaire, et sans l'entourer de balises de code."
+)
+
+CREATE_TYPES: dict[str, dict] = {
+    "cours": {
+        "label": "Cours", "kind": "cours", "reserve": 7000,
+        "prompt": (
+            "Rédige un cours complet et pédagogique, prêt à être révisé. Structure : # {title} ; ## Objectifs "
+            "(3 à 5 puces) ; puis les grandes parties en ## numérotées, chacune avec des explications claires, les "
+            "**définitions** en gras, des exemples concrets (commandes dans des blocs de code, calculs détaillés, "
+            "tableaux comparatifs quand c'est utile) et un encadré « > **À retenir** » ; ## Résumé (8 puces au "
+            "plus) ; ## Questions pour vérifier (5 questions, sans les réponses)."
+        ),
+    },
+    "td": {
+        "label": "TD", "kind": "td", "reserve": 6500,
+        "prompt": (
+            "Rédige un sujet de TD (travaux dirigés). Structure : # {title} ; une courte introduction (objectifs, "
+            "prérequis) ; ## Rappels de cours (l'essentiel, en quelques lignes) ; puis des exercices progressifs "
+            "« ## Exercice N — <thème> (★ à ★★★) » avec des énoncés précis, des données chiffrées réalistes et des "
+            "questions numérotées. Ne mets pas les solutions sous les énoncés : après une ligne ---, ajoute "
+            "« # Corrigé » avec la solution détaillée de chaque question (démarche, puis résultat en **gras**)."
+        ),
+    },
+    "tp": {
+        "label": "TP", "kind": "tp", "reserve": 6500,
+        "prompt": (
+            "Rédige un sujet de TP (travaux pratiques). Structure : # {title} ; ## Objectifs ; ## Prérequis et "
+            "matériel (logiciels, machines virtuelles, versions) ; puis « ## Partie N — <thème> » avec des étapes "
+            "numérotées, les commandes ou le code à saisir dans des blocs de code, ce que l'on doit observer et les "
+            "questions à traiter dans le compte-rendu ; ## Livrables attendus ; ## Pour aller plus loin. Après une "
+            "ligne ---, ajoute « # Éléments de correction » (résultats attendus, commandes, pièges fréquents)."
+        ),
+    },
+    "examen": {
+        "label": "Examen d'entraînement", "kind": "examen", "reserve": 7000,
+        "prompt": (
+            "Rédige un sujet d'examen d'entraînement réaliste, comme un vrai contrôle. Structure : # {title} ; la "
+            "durée, les documents autorisés et le barème total sur 20 ; puis des exercices variés (questions de "
+            "cours, exercices d'application, problème de synthèse, éventuellement un court QCM) sous la forme "
+            "« ## Exercice N — <thème> (x points) », dont la longueur et la difficulté correspondent à la durée. "
+            "Ne donne PAS les solutions sous les énoncés : après une ligne ---, ajoute « # Corrigé » avec, pour "
+            "chaque question, la réponse détaillée, le résultat en **gras** et la répartition des points."
+        ),
+    },
+    "fiche": {
+        "label": "Fiche de révision", "kind": "fiche", "reserve": 4000,
+        "prompt": (
+            "Rédige une fiche de révision synthétique. Structure : # {title} ; ## L'essentiel en 5 lignes ; "
+            "## Notions clés ; ## Définitions (« **terme** : définition ») ; ## Formules, commandes et méthodes ; "
+            "## Exemples types ; ## Pièges fréquents ; ## Questions pour s'auto-évaluer (sans les réponses)."
+        ),
+    },
+    "exercices": {
+        "label": "Exercices", "kind": "exercices", "reserve": 6000,
+        "prompt": (
+            "Rédige une série d'exercices d'entraînement progressifs : # {title}, puis « ## Exercice N — <thème> "
+            "(★ à ★★★) » avec des énoncés précis. Après une ligne ---, ajoute « # Corrigé » détaillé."
+        ),
+    },
+    "resume": {
+        "label": "Résumé", "kind": "resume", "reserve": 3000,
+        "prompt": (
+            "Rédige un résumé structuré : # {title} ; une section ## par grande partie (un court paragraphe et 2 à 4 "
+            "puces chacune) ; ## À retenir absolument (8 puces au plus)."
+        ),
+    },
+    "note": {
+        "label": "Note", "kind": "note", "reserve": 4000,
+        "prompt": "Rédige le document demandé en Markdown propre : # {title}, puis le contenu.",
+    },
+    "qcm": {"label": "QCM", "kind": "qcm", "task": "qcm", "count": 10},
+    "flashcards": {"label": "Flashcards", "kind": "flashcards", "task": "flashcards", "count": 15},
+}
+
+# Le modèle nomme parfois le type à sa façon (« examen_blanc », « Fiche de révision »…) : mots-clés, sans accents.
+CREATE_KIND_RULES = [
+    (r"\bqcm\b|quiz", "qcm"),
+    (r"flash|\bcartes?\b", "flashcards"),
+    (r"exam|controle|partiel|blanc|\bds\b|entrainement", "examen"),
+    (r"\btd\b|travaux diriges", "td"),
+    (r"\btp\b|travaux pratiques", "tp"),
+    (r"fiche", "fiche"),
+    (r"exercice", "exercices"),
+    (r"resume|synthese", "resume"),
+    (r"\bcours\b|\bcm\b|chapitre|lecon", "cours"),
+]
+
+CREATE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "creer_document",
+        "description": (
+            "Crée un nouveau document dans la bibliothèque de l'étudiant (cours, TD, TP, examen d'entraînement, "
+            "fiche, exercices, QCM, flashcards, résumé, note). À utiliser dès que l'étudiant demande de créer, "
+            "faire, rédiger, préparer ou générer un tel document."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "type": {"type": "string", "enum": [k for k in CREATE_TYPES]},
+                "titre": {"type": "string", "description": "Titre court, ex. « TD — Découpage en sous-réseaux »"},
+                "consignes": {
+                    "type": "string",
+                    "description": "Tout ce que le document doit contenir : thème, notions, niveau, nombre "
+                                   "d'exercices ou de questions, durée, avec ou sans corrigé…",
+                },
+                "matiere": {"type": "string", "description": "Matière concernée (parmi celles de l'étudiant), si elle est connue"},
+                "nombre": {"type": "integer", "description": "Nombre de questions (QCM) ou de cartes (flashcards), si précisé"},
+            },
+            "required": ["type", "titre", "consignes"],
+        },
+    },
+}
+
+
+def create_prompt(kind: str, title: str, request: str, sources: list[tuple[str, str]], message: str, images: int = 0) -> str:
+    spec = CREATE_TYPES[kind]
+    if sources:
+        blocks = "\n\n".join(f'<document titre="{t.replace(chr(34), chr(39))}">\n{x}\n</document>' for t, x in sources)
+        intro = (
+            f"Documents de référence :\n\n{blocks}\n\nAppuie-toi en priorité sur ces documents (mêmes notions, "
+            "même niveau, même vocabulaire, mêmes notations)."
+        )
+    else:
+        intro = (
+            "Aucun document de référence : appuie-toi sur tes connaissances, au niveau d'une 4e année d'école "
+            "d'ingénieurs en informatique et réseaux."
+        )
+    if images:
+        intro += f"\nL'étudiant a aussi joint {images} image(s) : sers-t'en comme référence."
     return (
-        f"{SYSTEM_TUTOR}\n\nTu discutes avec l'étudiant à propos de son cours « {title} ». Voici {scope} cours :\n"
-        f"<cours>\n{context}\n</cours>\n\nRéponds de manière pédagogique et concise. Si la réponse ne se "
-        "trouve pas dans le cours, dis-le, puis réponds avec tes connaissances générales en le signalant. "
-        "Si l'étudiant te demande de l'interroger, pose une question à la fois et corrige ses réponses."
+        f"{intro}\n\nDemande de l'étudiant : « {message.strip()} »\nCe qu'il faut rédiger : {request.strip()}\n\n"
+        + spec["prompt"].format(title=title)
     )

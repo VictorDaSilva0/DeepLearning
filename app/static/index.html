@@ -9,12 +9,12 @@
   <meta name="apple-mobile-web-app-title" content="Révision">
   <title>DeepLearning — atelier de révision</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧠</text></svg>">
-  <link rel="stylesheet" href="/static/style.css?v=14">
+  <link rel="stylesheet" href="/static/style.css?v=15">
   <!-- KaTeX (formules) : optionnel, chargé depuis un CDN quand Internet est disponible. -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
-  <script defer src="/static/app.js?v=14"></script>
+  <script defer src="/static/app.js?v=15"></script>
 </head>
 <body>
 <div id="app" class="layout">
@@ -137,6 +137,7 @@
           <option value="td">📗 TD</option>
           <option value="tp">🔧 TP</option>
           <option value="annale">📜 Contrôle année précédente</option>
+          <option value="examen">🎯 Examen d'entraînement</option>
           <option value="rendu">📑 Compte-rendu</option>
           <option value="note">📝 Note</option>
         </select>
@@ -309,6 +310,8 @@
 
     <div id="ai-nodoc" class="ai-empty">
       <p>Ouvre un cours dans la bibliothèque pour que l'IA puisse travailler dessus.</p>
+      <p class="small">Ou demande-lui directement de <b>créer un cours, un TD ou un examen d'entraînement</b>, et donne-lui tes fichiers avec 📎 sans les importer.</p>
+      <button id="ai-nodoc-chat" class="btn small accent">💬 Discuter avec l'IA</button>
     </div>
 
     <!-- Générer -->
@@ -359,8 +362,11 @@
       <div id="chat-log" class="chat-log"></div>
       <div id="chat-suggestions" class="chips"></div>
       <form id="chat-form" class="chat-form">
-        <textarea id="chat-input" rows="2" placeholder="Pose une question sur ce cours… (Entrée pour envoyer)"></textarea>
+        <div id="chat-files" class="chat-files" hidden></div>
+        <textarea id="chat-input" rows="2" placeholder="Pose une question, ou demande « fais-moi un TD sur… » (Entrée pour envoyer)"></textarea>
         <div class="row">
+          <button type="button" id="chat-attach" class="btn small ghost" title="Donner un fichier à l'IA, sans l'importer (PDF, Word, PowerPoint, texte, photo, capture d'écran)">📎</button>
+          <input type="file" id="chat-file-input" multiple hidden accept=".pdf,.docx,.pptx,.doc,.ppt,.txt,.md,.markdown,image/*">
           <button type="button" id="chat-save" class="btn small ghost" title="Enregistrer la discussion comme note">💾</button>
           <button type="button" id="chat-clear" class="btn small ghost" title="Effacer la discussion">🗑</button>
           <span class="spacer"></span>

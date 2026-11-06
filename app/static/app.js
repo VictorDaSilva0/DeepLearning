@@ -216,6 +216,7 @@ const KINDS = {
   td: { icon: '📗', label: 'TD' },
   tp: { icon: '🔧', label: 'TP' },
   annale: { icon: '📜', label: 'Contrôle année précédente' },
+  examen: { icon: '🎯', label: "Examen d'entraînement" },
   corrige: { icon: '🔑', label: 'Corrigé' },
   rendu: { icon: '📑', label: 'Compte-rendu' },
   relecture: { icon: '🧐', label: 'Relecture' },
@@ -242,7 +243,7 @@ const TASKS = [
   { id: 'glossaire', icon: '📖', label: 'Glossaire', desc: 'Tous les termes techniques' },
   { id: 'plan', icon: '🗺️', label: 'Plan / carte mentale', desc: "L'organisation des idées" },
   { id: 'corrige', icon: '🔑', label: 'Corrigé détaillé', desc: 'Résout les exercices du TD / TP / contrôle' },
-  { id: 'similaire', icon: '🎯', label: "Sujet d'entraînement", desc: 'Nouveau contrôle du même type + corrigé', only: ['annale'] },
+  { id: 'similaire', icon: '🎯', label: "Sujet d'entraînement", desc: 'Nouveau contrôle du même type + corrigé', only: ['annale', 'examen'] },
   { id: 'relecture', icon: '🧐', label: 'Relire mon compte-rendu', desc: 'Couverture du sujet, erreurs, conseils', only: ['rendu'] },
   { id: 'custom', icon: '💬', label: 'Demande libre', desc: 'Ta propre consigne' },
 ];
@@ -257,6 +258,7 @@ const CATEGORIES = [
   { kind: 'td', short: 'TD', label: 'Travaux dirigés' },
   { kind: 'tp', short: 'TP', label: 'Travaux pratiques' },
   { kind: 'annale', short: 'Contrôle', label: 'Contrôles des années précédentes', group: 'Contrôles années préc.' },
+  { kind: 'examen', short: 'Examen', label: "Examens d'entraînement", group: "Examens d'entraînement" },
   { kind: 'rendu', short: 'CR', label: 'Comptes-rendus' },
 ];
 const SOURCE_KINDS = CATEGORIES.map((c) => c.kind);
@@ -291,8 +293,18 @@ const CHAT_SUGGESTIONS = [
   'Quels sont les points essentiels de ce cours ?',
   'Interroge-moi sur ce cours, une question à la fois.',
   'Explique-moi la notion la plus difficile avec un exemple.',
-  'Fais-moi un tableau récapitulatif.',
+  "Fais-moi un TD d'entraînement sur ce cours, avec le corrigé.",
+  "Prépare-moi un examen blanc d'1 h sur ce cours.",
 ];
+/** Sans cours ouvert : les suggestions qui finissent par « … » se complètent avant l'envoi. */
+const CHAT_SUGGESTIONS_FREE = [
+  'Fais-moi un cours sur …',
+  'Crée un TD de 5 exercices sur …',
+  'Prépare-moi un examen blanc de 2 h sur …',
+  'Explique-moi simplement …',
+];
+/** Types proposés pour « 📄 En faire un document » sous une réponse de l'IA. */
+const ANSWER_KINDS = ['cours', 'td', 'tp', 'examen', 'fiche', 'exercices', 'note'];
 
 // ------------------------------------------------------------------ état
 const state = {
@@ -311,6 +323,7 @@ const state = {
   difficulty: 'moyen',
   collapsed: store.get('collapsed', {}),
   chats: {},
+  chatFiles: {}, // fichiers donnés à l'IA, par discussion : { id, name, chars, images, uploading }
   docTab: 'edit',
   dirty: false,
   previewSel: '',
@@ -2460,47 +2473,195 @@ function renderChat() {
   if (!msgs.length) {
     log.innerHTML = `<div class="chat-empty">${
       state.current
-        ? `Pose une question sur <b>${esc(state.current.title)}</b>.<br>L'IA s'appuie sur le contenu du cours.`
-        : 'Aucun cours ouvert : discussion libre avec le tuteur.'
+        ? `Pose une question sur <b>${esc(state.current.title)}</b>, ou demande-moi d'en faire un TD, un examen d'entraînement, des flashcards…<br>📎 pour me donner un autre fichier.`
+        : "Pose une question, demande-moi de <b>créer un document</b> (« fais-moi un cours sur… », « prépare un examen blanc de 2 h sur… ») ou donne-moi un fichier avec 📎 (PDF, Word, PowerPoint, photo…) : pas besoin de l'importer."
     }</div>`;
   }
   for (const m of msgs) {
     const d = document.createElement('div');
     d.className = `msg ${m.role}${m.error ? ' error' : ''}${m.pending ? ' pending' : ''}`;
-    if (m.role === 'user' || m.error) d.textContent = m.content;
-    else {
+    if (m.role === 'user' || m.error) {
+      d.textContent = m.content;
+      if (m.files?.length) {
+        const f = document.createElement('div');
+        f.className = 'msg-files';
+        f.textContent = m.files.map((n) => `📎 ${n}`).join('  ');
+        d.prepend(f);
+      }
+    } else {
       d.classList.add('markdown', 'small');
       d.innerHTML = m.html || esc(m.content);
     }
     m.el = d;
     log.append(d);
+    if (m.role === 'assistant') {
+      m.cardsEl = document.createElement('div');
+      m.cardsEl.className = 'chat-docs';
+      log.append(m.cardsEl);
+      renderDocCards(m);
+      if (!m.pending && !m.error && m.content.trim().length > 200) {
+        const actions = document.createElement('div');
+        actions.className = 'msg-actions';
+        actions.innerHTML = '<button type="button" class="link" title="Enregistrer cette réponse dans la bibliothèque">📄 En faire un document</button>';
+        actions.querySelector('button').onclick = (e) => answerToDocMenu(e.currentTarget, m);
+        log.append(actions);
+      }
+    }
   }
   log.scrollTop = log.scrollHeight;
   const sug = $('#chat-suggestions');
-  sug.hidden = msgs.length > 0 || !state.current;
-  sug.innerHTML = CHAT_SUGGESTIONS.map((s) => `<button type="button">${esc(s)}</button>`).join('');
+  sug.hidden = msgs.length > 0;
+  sug.innerHTML = (state.current ? CHAT_SUGGESTIONS : CHAT_SUGGESTIONS_FREE).map((s) => `<button type="button">${esc(s)}</button>`).join('');
   const busy = !!state.controllers.chat;
   $('#chat-stop').hidden = !busy;
   $('#chat-send').disabled = busy;
+  renderChatFiles();
+}
+
+/** Documents que l'IA rédige à la suite d'une réponse (« fais-moi un TD… »). */
+function renderDocCards(m) {
+  if (!m.cardsEl) return;
+  m.cardsEl.innerHTML = (m.docs || [])
+    .map((c) => {
+      const k = KINDS[c.kind] || { icon: '📄', label: 'Document' };
+      if (c.status === 'error') {
+        return `<div class="doc-card error"><span class="ico">⚠</span><div class="info"><b>${esc(c.title)}</b><small>${esc(c.message)}</small></div></div>`;
+      }
+      if (c.status === 'done') {
+        return `<div class="doc-card done${c.warning ? ' warn' : ''}"><span class="ico">${k.icon}</span><div class="info"><b>${esc(c.document.title)}</b><small>${
+          c.warning ? '⚠ ' + esc(c.warning) : `${esc(k.label)} ajouté à ta bibliothèque`
+        }</small></div><button type="button" class="btn small primary" data-open="${c.document.id}">Ouvrir →</button></div>`;
+      }
+      const size = c.chars ? ` · ${c.chars.toLocaleString('fr-FR')} caractères` : '';
+      return `<div class="doc-card writing"><span class="spinner"></span><div class="info"><b>${k.icon} ${esc(c.title)}</b><small>${esc(k.label)} en cours de rédaction${size}…</small></div></div>`;
+    })
+    .join('');
+  m.cardsEl.hidden = !m.docs?.length;
+  // L'IA a seulement lancé la rédaction, sans rien écrire : pas de bulle vide.
+  if (m.el) m.el.hidden = !!m.docs?.length && !m.content.trim();
+}
+
+function openCreatedDoc(id) {
+  if (isPhone()) {
+    // L'assistant couvre tout l'écran : on le referme pour montrer le document.
+    state.aiOpen = false;
+    applyAIOpen();
+  }
+  go(`#doc/${id}`);
+}
+
+/** Enregistre une réponse de l'IA comme document (cours, TD, examen…). */
+function answerToDocMenu(anchor, m) {
+  showMenu(
+    anchor,
+    ANSWER_KINDS.map((kind) => ({ label: `${KINDS[kind].icon} ${KINDS[kind].label}`, run: () => answerToDoc(m, kind) })),
+  );
+}
+
+async function answerToDoc(m, kind) {
+  const msgs = state.chats[chatKey()] || [];
+  const question = msgs[msgs.indexOf(m) - 1]?.content || '';
+  const heading = m.content.match(/^#\s+(.+)$/m)?.[1]?.trim();
+  const title = (heading || `${KINDS[kind].label} — ${question.replace(/\s+/g, ' ').slice(0, 70) || "réponse de l'IA"}`).slice(0, 200);
+  const content = heading ? m.content : `# ${title}\n\n${m.content}`;
+  const doc = state.current;
+  try {
+    const d = await api('/api/documents', {
+      method: 'POST',
+      body: { title, content, kind, subject_id: doc?.subject_id ?? null, parent_id: doc && !SOURCE_KINDS.includes(kind) ? doc.id : null },
+    });
+    await loadLibrary();
+    toast(`${KINDS[kind].icon} « ${title} » ajouté à ta bibliothèque.`, { action: { label: 'Ouvrir', run: () => openCreatedDoc(d.id) } });
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+
+// ------------------------------------------------------------------ fichiers donnés à l'IA
+function renderChatFiles() {
+  const list = state.chatFiles[chatKey()] || [];
+  const box = $('#chat-files');
+  box.hidden = !list.length;
+  box.innerHTML = list
+    .map((f, i) => {
+      const what = f.uploading ? 'lecture…' : f.chars ? `${Math.max(1, Math.round(f.chars / 1000))} k car.` : `${f.images} image${f.images > 1 ? 's' : ''}`;
+      const icon = /\.(png|jpe?g|webp|gif|bmp)$/i.test(f.name) ? '🖼' : fileIcon(f.name);
+      return `<span class="file-chip${f.uploading ? ' loading' : ''}" title="${esc(f.warning || f.name)}">${icon}<span class="n">${esc(f.name)}</span><small>${what}</small>${
+        f.uploading ? '<span class="spinner"></span>' : `<button type="button" data-i="${i}" aria-label="Retirer ${esc(f.name)}">✕</button>`
+      }</span>`;
+    })
+    .join('');
+}
+
+/** Lit des fichiers (PDF, Word, PowerPoint, images…) pour la discussion, sans les ajouter à la bibliothèque. */
+async function addChatFiles(fileList) {
+  const files = [...fileList].slice(0, 10);
+  if (!files.length) return;
+  const key = chatKey();
+  const list = (state.chatFiles[key] ||= []);
+  const items = files.map((f, i) => ({ name: f.name || `capture-${Date.now()}-${i}.png`, uploading: true }));
+  list.push(...items);
+  renderChatFiles();
+  const fd = new FormData();
+  files.forEach((f, i) => fd.append('files', f, items[i].name));
+  const job = (async () => {
+    try {
+      const res = await fetch('/api/attachments', { method: 'POST', body: fd });
+      if (!res.ok) throw await httpError('/api/attachments', res);
+      const out = await res.json();
+      items.forEach((it, i) => Object.assign(it, out[i] || { error: 'Pas de réponse du serveur.' }));
+    } catch (e) {
+      items.forEach((it) => (it.error = e.message));
+    }
+    for (const it of items) {
+      it.uploading = false;
+      if (it.error) toast(`${it.name} : ${it.error}`, { error: true });
+      else if (it.warning) toast(`${it.name} : ${it.warning}`);
+    }
+    state.chatFiles[key] = (state.chatFiles[key] || []).filter((f) => !f.error);
+    if (chatKey() === key) renderChatFiles();
+  })();
+  state.chatUploads = Promise.all([state.chatUploads, job]);
+  await job;
 }
 
 async function sendChat(text) {
   text = text.trim();
   if (!text || state.controllers.chat) return;
   const key = chatKey();
+  if ((state.chatFiles[key] || []).some((f) => f.uploading)) {
+    toast('Lecture du fichier en cours…');
+    await state.chatUploads;
+  }
+  const files = (state.chatFiles[key] || []).filter((f) => f.id);
   const msgs = (state.chats[key] ||= []);
-  msgs.push({ role: 'user', content: text });
-  const answer = { role: 'assistant', content: '', pending: true };
+  const asked = { role: 'user', content: text };
+  // Fichiers nommés dans le message où ils apparaissent pour la première fois.
+  const shown = new Set(msgs.flatMap((m) => m.files || []));
+  const fresh = files.map((f) => f.name).filter((n) => !shown.has(n));
+  if (fresh.length) asked.files = fresh;
+  msgs.push(asked);
+  const answer = { role: 'assistant', content: '', pending: true, docs: [] };
   msgs.push(answer);
   const ctrl = new AbortController();
   state.controllers.chat = ctrl;
   renderChat();
-  const payload = {
-    document_id: state.current?.id ?? null,
-    messages: msgs.filter((m) => !m.pending && !m.error).map(({ role, content }) => ({ role, content })),
-  };
+  // L'historique rappelle au modèle les fichiers donnés et les documents déjà créés.
+  const history = msgs
+    .filter((m) => !m.pending && !m.error)
+    .map((m) => {
+      let content = m.content;
+      if (m.files?.length) content += `\n\n[Fichiers joints : ${m.files.join(', ')}]`;
+      for (const c of m.docs || []) if (c.status === 'done') content += `\n\n[Document créé dans la bibliothèque : ${KINDS[c.kind]?.label || c.kind} « ${c.document.title} »]`;
+      return { role: m.role, content: content.trim() || '(document créé)' };
+    });
+  const payload = { document_id: state.current?.id ?? null, messages: history, attachments: files.map((f) => f.id) };
   const live = liveRenderer(() => answer.el, 300);
   const log = $('#chat-log');
+  const follow = () => {
+    if (log.scrollHeight - log.scrollTop - log.clientHeight < 160) log.scrollTop = log.scrollHeight;
+  };
+  const card = (n) => answer.docs.find((c) => c.n === n);
   try {
     await streamNDJSON(
       '/api/chat',
@@ -2509,7 +2670,28 @@ async function sendChat(text) {
         if (ev.type === 'token') {
           answer.content += ev.text;
           live.update(answer.content);
-          if (log.scrollHeight - log.scrollTop - log.clientHeight < 120) log.scrollTop = log.scrollHeight;
+          follow();
+        } else if (ev.type === 'create') {
+          answer.docs.push({ n: ev.n, kind: ev.kind, title: ev.title, status: 'writing', chars: 0 });
+          renderDocCards(answer);
+          follow();
+        } else if (ev.type === 'create_token') {
+          const c = card(ev.n);
+          if (c) {
+            c.chars += ev.text.length;
+            if (c.chars - (c.shown || 0) > 150) {
+              c.shown = c.chars;
+              renderDocCards(answer);
+            }
+          }
+        } else if (ev.type === 'created') {
+          Object.assign(card(ev.n) || {}, { status: 'done', document: ev.document, warning: ev.warning });
+          renderDocCards(answer);
+          refreshLibrarySoon();
+          refreshDueSoon();
+        } else if (ev.type === 'create_error') {
+          Object.assign(card(ev.n) || {}, { status: 'error', message: ev.message });
+          renderDocCards(answer);
         }
       },
       ctrl.signal,
@@ -2517,12 +2699,15 @@ async function sendChat(text) {
     await live.flush(answer.content);
     answer.html = answer.el?.innerHTML;
   } catch (e) {
+    for (const c of answer.docs) if (c.status === 'writing') Object.assign(c, { status: 'error', message: e.name === 'AbortError' ? 'Rédaction interrompue.' : e.message });
     if (e.name !== 'AbortError') {
-      answer.error = true;
-      answer.content = '⚠ ' + e.message;
-    } else if (!answer.content) {
+      answer.error = !answer.content && !answer.docs.length;
+      if (answer.error) answer.content = '⚠ ' + e.message;
+      else toast(e.message, { error: true });
+    } else if (!answer.content && !answer.docs.length) {
       msgs.splice(msgs.indexOf(answer), 1);
-    } else {
+    }
+    if (!answer.error && answer.content) {
       await live.flush(answer.content);
       answer.html = answer.el?.innerHTML;
     }
@@ -3940,12 +4125,42 @@ function bindEvents() {
   });
   $('#chat-suggestions').addEventListener('click', (e) => {
     const b = e.target.closest('button');
-    if (b) sendChat(b.textContent);
+    if (!b) return;
+    if (!b.textContent.endsWith('…')) return sendChat(b.textContent);
+    // Suggestion à compléter (« Fais-moi un cours sur … ») : on la met dans le champ.
+    const input = $('#chat-input');
+    input.value = b.textContent.slice(0, -1);
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
   });
+  $('#chat-log').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-open]');
+    if (b) openCreatedDoc(+b.dataset.open);
+  });
+  // Fichiers donnés à l'IA : 📎, coller une capture d'écran, glisser-déposer sur le panneau
+  $('#chat-attach').onclick = () => $('#chat-file-input').click();
+  $('#chat-file-input').onchange = (e) => {
+    addChatFiles(e.target.files);
+    e.target.value = '';
+  };
+  $('#chat-files').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-i]');
+    if (!b) return;
+    (state.chatFiles[chatKey()] || []).splice(+b.dataset.i, 1);
+    renderChatFiles();
+  });
+  $('#chat-input').addEventListener('paste', (e) => {
+    const files = [...(e.clipboardData?.files || [])];
+    if (!files.length) return;
+    e.preventDefault();
+    addChatFiles(files);
+  });
+  $('#ai-nodoc-chat').onclick = () => setAITab('chat');
   $('#chat-stop').onclick = () => state.controllers.chat?.abort();
   $('#chat-clear').onclick = () => {
     if (state.controllers.chat) return;
     delete state.chats[chatKey()];
+    delete state.chatFiles[chatKey()];
     renderChat();
   };
   $('#chat-save').onclick = saveChat;
@@ -4019,8 +4234,14 @@ function bindEvents() {
     dragDepth = Math.max(0, dragDepth - 1);
     if (!dragDepth) $('#drop-overlay').hidden = true;
   });
+  // Au-dessus du panneau IA, les fichiers sont donnés à l'IA au lieu d'être importés.
+  const overAI = (e) => !!e.target.closest?.('#ai-panel') && state.aiOpen && !$('#dlg-import').open;
   window.addEventListener('dragover', (e) => {
-    if (hasFiles(e)) e.preventDefault();
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    const msg = overAI(e) ? "📎 Dépose ici pour donner le fichier à l'IA (sans l'importer)" : '📥 Dépose tes cours pour les importer';
+    const label = $('#drop-overlay div');
+    if (label.textContent !== msg) label.textContent = msg;
   });
   window.addEventListener('drop', (e) => {
     if (!hasFiles(e)) return;
@@ -4029,6 +4250,11 @@ function bindEvents() {
     $('#drop-overlay').hidden = true;
     const files = [...e.dataTransfer.files];
     if (!files.length) return;
+    if (overAI(e)) {
+      if (state.aiTab !== 'chat') setAITab('chat');
+      addChatFiles(files);
+      return;
+    }
     const head = e.target.closest?.('.subject-head');
     if ($('#dlg-import').open) addImportFiles(files);
     else openImport(files, head ? head.dataset.sid : undefined);
