@@ -456,6 +456,7 @@ function renderLibrary() {
     nav.append(block);
   }
   nav.scrollTop = scroll;
+  updateLibraryPresence();
 }
 
 function subjectGroup(g, docs, byId, exam) {
@@ -682,10 +683,14 @@ function showView(name) {
   $('#app').classList.toggle('wide', name === 'calendar'); // le calendrier prend la place du panneau IA
   $('#btn-calendar').classList.toggle('active', name === 'calendar');
   $('#btn-review-all').classList.toggle('active', name === 'review');
+  if (name !== 'doc') liveWhere(); // (un document s'annonce une fois chargé, dans openDoc)
 }
 
 async function leaveDoc() {
   await flushSave();
+  live.doc = null;
+  live.carets.clear();
+  drawCarets();
   state.current = null;
   state.keyMode = null;
   highlightActive();
@@ -771,6 +776,7 @@ async function refreshDueCount() {
 async function openDoc(id, { force = false } = {}) {
   if (!force && state.current?.id === id) {
     showView('doc');
+    liveWhere();
     return;
   }
   await flushSave();
@@ -795,6 +801,9 @@ async function openDoc(id, { force = false } = {}) {
     preview.scrollTop = 0;
     editor.setSelectionRange(0, 0);
   }
+  liveOpenDoc(doc);
+  liveWhere(); // rejoint le document : version en direct + curseurs des autres
+  renderDocPresence();
   $('#btn-source').hidden = !doc.source_file;
   $('#doc-source').textContent = doc.source_name ? `Source : ${doc.source_name}` : '';
   setSaveState('');
@@ -980,7 +989,7 @@ async function showDocTab(tab) {
   if (tab === 'original') {
     loadOriginal();
   } else if (tab === 'text') {
-    if (state.current.kind === 'flashcards') {
+    if (state.current.kind === 'flashcards' && !liveActive()) {
       const fresh = await api(`/api/documents/${state.current.id}`);
       state.current.content = fresh.content;
       editor.value = fresh.content;
@@ -1129,25 +1138,37 @@ function setSaveState(text) {
 
 const scheduleSave = debounce(() => saveNow(), 800);
 
+/** Enregistrement classique (sans le canal temps réel : hors connexion, ou en attendant d'être relié). */
 async function saveNow() {
   const doc = state.current;
   if (!doc || !state.dirty) return;
+  if (liveActive()) {
+    state.dirty = false;
+    livePush();
+    return;
+  }
   const content = editor.value;
   state.dirty = false;
   setSaveState('Enregistrement…');
+  const saving = (state.saving = api(`/api/documents/${doc.id}`, { method: 'PATCH', body: { content } }));
   try {
-    await api(`/api/documents/${doc.id}`, { method: 'PATCH', body: { content } });
+    await saving;
     doc.content = content;
+    // Point de départ commun si le canal temps réel revient : seules les frappes suivantes seront fusionnées.
+    if (live.doc?.id === doc.id && !live.doc.joined) Object.assign(live.doc, { server: content, known: content, inflight: null });
     if (state.current === doc) setSaveState('Enregistré ✓');
   } catch (e) {
     state.dirty = true;
     setSaveState('⚠ Non enregistré');
     toast('Enregistrement impossible : ' + e.message, { error: true });
+  } finally {
+    if (state.saving === saving) state.saving = null;
   }
 }
 
 async function flushSave() {
   if (state.dirty) await saveNow();
+  await liveSettled();
 }
 
 function updateStats() {
@@ -1235,6 +1256,659 @@ function exportDoc(kind) {
       () => toast('Copie impossible.', { error: true }),
     );
 }
+
+// ================================================================== temps réel
+/* Présence (qui est connecté, où), modifications des autres en direct et édition à plusieurs.
+ * Le texte voyage sous forme d'opérations (comme ot.js) : liste de composantes — entier > 0 = garder
+ * n caractères, chaîne = insérer, entier < 0 = supprimer n caractères (positions JavaScript, UTF-16).
+ * Le serveur (app/live.py) ordonne les opérations et transforme celles écrites en même temps. */
+const OT = {
+  push(op, c) {
+    const last = op[op.length - 1];
+    if (typeof c === 'string') {
+      if (!c) return;
+      if (typeof last === 'string') op[op.length - 1] = last + c;
+      else if (typeof last === 'number' && last < 0) {
+        if (typeof op[op.length - 2] === 'string') op[op.length - 2] += c;
+        else op.splice(op.length - 1, 0, c);
+      } else op.push(c);
+    } else if (c) {
+      if (typeof last === 'number' && (last > 0) === (c > 0)) op[op.length - 1] = last + c;
+      else op.push(c);
+    }
+  },
+  baseLen: (op) => op.reduce((n, c) => (typeof c === 'string' ? n : n + Math.abs(c)), 0),
+  noop: (op) => op.every((c) => typeof c === 'number' && c > 0),
+  apply(text, op) {
+    let i = 0;
+    let out = '';
+    for (const c of op) {
+      if (typeof c === 'string') out += c;
+      else if (c > 0) {
+        out += text.slice(i, i + c);
+        i += c;
+      } else i -= c;
+      if (i > text.length) throw new Error('opération plus longue que le texte');
+    }
+    if (i !== text.length) throw new Error('opération incomplète');
+    return out;
+  },
+  /** op1 et op2 partent du même texte → [op1', op2'] (à position égale, op1 insère en premier). */
+  transform(op1, op2) {
+    if (OT.baseLen(op1) !== OT.baseLen(op2)) throw new Error('opérations sur des textes différents');
+    const p1 = [];
+    const p2 = [];
+    let i1 = 0;
+    let i2 = 0;
+    let a = op1[i1++];
+    let b = op2[i2++];
+    while (a !== undefined || b !== undefined) {
+      if (typeof a === 'string') {
+        OT.push(p1, a);
+        OT.push(p2, a.length);
+        a = op1[i1++];
+        continue;
+      }
+      if (typeof b === 'string') {
+        OT.push(p1, b.length);
+        OT.push(p2, b);
+        b = op2[i2++];
+        continue;
+      }
+      if (a === undefined || b === undefined) throw new Error('opérations incompatibles');
+      if (a > 0 && b > 0) {
+        const m = Math.min(a, b);
+        OT.push(p1, m);
+        OT.push(p2, m);
+        a = a - m || op1[i1++];
+        b = b - m || op2[i2++];
+      } else if (a < 0 && b < 0) {
+        const m = Math.min(-a, -b);
+        a = a + m || op1[i1++];
+        b = b + m || op2[i2++];
+      } else if (a < 0) {
+        const m = Math.min(-a, b);
+        OT.push(p1, -m);
+        a = a + m || op1[i1++];
+        b = b - m || op2[i2++];
+      } else {
+        const m = Math.min(a, -b);
+        OT.push(p2, -m);
+        a = a - m || op1[i1++];
+        b = b + m || op2[i2++];
+      }
+    }
+    return [p1, p2];
+  },
+  /** Position d'un curseur après l'opération. */
+  index(op, index) {
+    let n = index;
+    for (const c of op) {
+      if (typeof c === 'string') n += c.length;
+      else if (c > 0) index -= c;
+      else {
+        n -= Math.min(index, -c);
+        index += c;
+      }
+      if (index < 0) break;
+    }
+    return n;
+  },
+  /** Opération qui transforme a en b (une seule zone modifiée, sans couper un émoji en deux). */
+  diff(a, b) {
+    const max = Math.min(a.length, b.length);
+    let p = 0;
+    while (p < max && a.charCodeAt(p) === b.charCodeAt(p)) p++;
+    let s = 0;
+    while (s < max - p && a.charCodeAt(a.length - 1 - s) === b.charCodeAt(b.length - 1 - s)) s++;
+    const high = (c) => c >= 0xd800 && c <= 0xdbff;
+    const low = (c) => c >= 0xdc00 && c <= 0xdfff;
+    if (p > 0 && high(a.charCodeAt(p - 1))) p--;
+    if (s > 0 && low(a.charCodeAt(a.length - s))) s--;
+    const op = [];
+    OT.push(op, p);
+    OT.push(op, b.slice(p, b.length - s));
+    OT.push(op, -(a.length - p - s));
+    OT.push(op, s);
+    return op;
+  },
+};
+
+const live = {
+  ws: null,
+  open: false,
+  stop: false, // déconnexion volontaire (fermeture de session)
+  retry: 0,
+  retryTimer: 0,
+  pingTimer: 0,
+  key: Math.random().toString(36).slice(2, 12), // cet onglet, d'une reconnexion à l'autre
+  me: null,
+  users: [], // un élément par onglet ouvert : { cid, id, name, color, view, doc, typing }
+  where: '',
+  doc: null, // { id, rev, server, known, inflight, joined } — voir livePush
+  seq: 0,
+  queue: null, // messages mis de côté pendant une saisie en cours (clavier de téléphone)
+  queueTimer: 0,
+  carets: new Map(), // curseurs des autres dans ce document : cid → { a, b, name, color, at }
+  lastValue: '',
+  textVersion: 0,
+  caretTimer: 0,
+  caretSent: '',
+};
+
+/** L'éditeur est synchronisé en direct avec le serveur (sinon : enregistrement classique). */
+const liveActive = () => !!(live.open && live.doc?.joined && live.doc.id === state.current?.id);
+
+function liveConnect() {
+  if (live.ws || live.stop || !('WebSocket' in window)) return;
+  clearTimeout(live.retryTimer);
+  const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/live?key=${live.key}`);
+  live.ws = ws;
+  ws.onopen = () => {
+    live.open = true;
+    live.retry = 0;
+    live.where = '';
+    liveWhere();
+    clearInterval(live.pingTimer);
+    live.pingTimer = setInterval(() => liveSend({ t: 'ping' }), 25000); // Cloudflare coupe au bout de 100 s sans échange
+  };
+  ws.onmessage = (e) => {
+    let m;
+    try {
+      m = JSON.parse(e.data);
+    } catch {
+      return;
+    }
+    liveReceive(m);
+  };
+  ws.onclose = (e) => {
+    if (live.ws !== ws) return;
+    live.ws = null;
+    live.open = false;
+    clearInterval(live.pingTimer);
+    if (live.doc) live.doc.joined = false;
+    live.users = [];
+    live.carets.clear();
+    renderPresence();
+    drawCarets();
+    if (live.stop || e.code === 4401 || e.code === 4403) return; // session expirée : reconnexion après la connexion
+    const delay = [500, 1000, 2000, 5000, 10000][Math.min(live.retry++, 4)];
+    live.retryTimer = setTimeout(liveConnect, delay);
+  };
+}
+
+function liveSend(m) {
+  if (!live.open || live.ws?.readyState !== WebSocket.OPEN) return false;
+  live.ws.send(JSON.stringify(m));
+  return true;
+}
+
+/** Indique au serveur où l'on est (accueil, calendrier, document…) — et rejoint le document ouvert. */
+function liveWhere() {
+  const view = !$('#view-doc').hidden && state.current ? 'doc' : !$('#view-calendar').hidden ? 'calendar' : !$('#view-review').hidden ? 'review' : 'home';
+  const doc = view === 'doc' ? state.current.id : null;
+  const key = `${view}:${doc}`;
+  if (key === live.where && !(doc && live.doc && !live.doc.joined)) return;
+  if (liveSend({ t: 'where', view, doc })) live.where = key;
+}
+
+function liveOpenDoc(doc) {
+  live.doc = { id: doc.id, rev: 0, server: doc.content, known: doc.content, inflight: null, joined: false };
+  live.carets.clear();
+  live.lastValue = editor.value;
+  live.caretSent = '';
+  drawCarets();
+}
+
+function liveReceive(m) {
+  if (live.queue && ['joined', 'ack', 'op', 'caret'].includes(m.t)) {
+    live.queue.push(m); // une saisie est en cours (mot en composition) : on l'applique juste après
+    return;
+  }
+  switch (m.t) {
+    case 'welcome':
+      live.me = m.me;
+      break;
+    case 'presence':
+      live.users = m.users || [];
+      renderPresence();
+      break;
+    case 'joined':
+      liveJoined(m);
+      break;
+    case 'ack':
+      liveAck(m);
+      break;
+    case 'op':
+      liveRemoteOp(m);
+      break;
+    case 'caret':
+      liveRemoteCaret(m);
+      break;
+    case 'gone':
+      liveGone(m);
+      break;
+    case 'changed':
+      liveChanged(m);
+      break;
+    case 'error':
+      toast(m.message, { error: true });
+      break;
+  }
+}
+
+function liveHold(on) {
+  clearTimeout(live.queueTimer);
+  if (on) {
+    live.queue = live.queue || [];
+    live.queueTimer = setTimeout(() => liveHold(false), 4000); // filet de sécurité
+    return;
+  }
+  const q = live.queue || [];
+  live.queue = null;
+  q.forEach(liveReceive);
+  if (liveActive()) livePush();
+}
+
+/** Version de référence reçue (ouverture, reconnexion) : on y fusionne ce qui a été tapé entre-temps. */
+function liveJoined(m) {
+  const d = live.doc;
+  if (!d || d.id !== m.doc) return;
+  if (state.saving) {
+    state.saving.finally(() => liveSend({ t: 'sync', doc: d.id }));
+    return;
+  }
+  let base = d.known;
+  if (d.inflight) {
+    const applied = m.seq != null ? m.seq >= d.inflight.seq : m.content === d.known;
+    if (!applied) base = d.server;
+  }
+  let value = m.content;
+  try {
+    const mine = OT.diff(base, editor.value);
+    if (!OT.noop(mine)) value = OT.apply(editor.value, OT.transform(mine, OT.diff(base, m.content))[1]);
+  } catch {
+    value = m.content;
+  }
+  Object.assign(d, { rev: m.rev, server: m.content, known: m.content, inflight: null, joined: true });
+  state.dirty = false;
+  if (value !== editor.value) applyEditorOp(OT.diff(editor.value, value));
+  livePush();
+  liveSendCaret();
+}
+
+/** Envoie ce qui a été tapé (une opération à la fois ; la suite part à l'accusé de réception). */
+function livePush() {
+  const d = live.doc;
+  if (!d || !d.joined || d.inflight || !live.open || live.queue || d.id !== state.current?.id) return;
+  const op = OT.diff(d.known, editor.value);
+  if (OT.noop(op)) return;
+  d.inflight = { op, seq: ++live.seq };
+  d.known = editor.value;
+  if (!liveSend({ t: 'op', doc: d.id, rev: d.rev, seq: d.inflight.seq, op })) {
+    d.inflight = null;
+    d.known = d.server;
+    return;
+  }
+  setSaveState('Enregistrement…');
+}
+
+function liveAck(m) {
+  const d = live.doc;
+  if (!d || d.id !== m.doc || !d.inflight) return;
+  if (m.rev !== d.rev + 1) return liveResync();
+  d.rev = m.rev;
+  d.server = d.known;
+  d.inflight = null;
+  if (state.current) state.current.content = d.server;
+  if (editor.value !== d.known) livePush();
+  else {
+    setSaveState('Enregistré ✓');
+    liveSendCaret();
+  }
+}
+
+function liveRemoteOp(m) {
+  const d = live.doc;
+  if (!d || d.id !== m.doc || !d.joined) return;
+  if (m.rev !== d.rev + 1) return liveResync();
+  try {
+    let r = m.op;
+    const server = OT.apply(d.server, r);
+    if (d.inflight) {
+      const [inflight, r2] = OT.transform(d.inflight.op, r);
+      d.inflight.op = inflight;
+      r = r2;
+    }
+    const local = OT.transform(OT.diff(d.known, editor.value), r)[1]; // en tenant compte de ce qui n'est pas encore parti
+    d.known = OT.apply(d.known, r);
+    d.server = server;
+    d.rev = m.rev;
+    applyEditorOp(local);
+  } catch {
+    liveResync();
+  }
+}
+
+function liveResync() {
+  const d = live.doc;
+  if (!d) return;
+  d.joined = false;
+  liveSend({ t: 'sync', doc: d.id });
+}
+
+/** Modification venue d'ailleurs : appliquée à l'éditeur en gardant la sélection et le défilement. */
+function applyEditorOp(op) {
+  const old = editor.value;
+  const next = OT.apply(old, op);
+  if (next === old) return;
+  const { selectionStart: s, selectionEnd: e, selectionDirection: dir, scrollTop } = editor;
+  editor.value = next;
+  editor.setSelectionRange(OT.index(op, s), OT.index(op, e), dir);
+  editor.scrollTop = scrollTop;
+  for (const c of live.carets.values()) {
+    c.a = OT.index(op, c.a);
+    c.b = OT.index(op, c.b);
+  }
+  live.lastValue = next;
+  live.textVersion++;
+  renderPreview();
+  updateStats();
+  if (!$('#find-bar').hidden) computeMatches();
+  drawCarets();
+}
+
+/** Après une frappe : les curseurs des autres suivent le texte, puis on envoie. */
+function liveLocalChange() {
+  const prev = live.lastValue;
+  const now = editor.value;
+  live.lastValue = now;
+  live.textVersion++;
+  if (live.carets.size && prev !== now) {
+    const op = OT.diff(prev, now);
+    for (const c of live.carets.values()) {
+      c.a = OT.index(op, c.a);
+      c.b = OT.index(op, c.b);
+    }
+    drawCarets();
+  }
+}
+
+/** Attend que le serveur ait reçu toutes les modifications (avant une génération IA, un changement de page…). */
+function liveSettled(ms = 3000) {
+  return new Promise((resolve) => {
+    const t0 = Date.now();
+    const check = () => {
+      const d = live.doc;
+      if (!liveActive() || (!d.inflight && d.known === editor.value) || Date.now() - t0 > ms) return resolve();
+      livePush();
+      setTimeout(check, 40);
+    };
+    check();
+  });
+}
+
+function liveSendCaret() {
+  if (live.caretTimer) return;
+  live.caretTimer = setTimeout(() => {
+    live.caretTimer = 0;
+    const d = live.doc;
+    if (!liveActive() || d.inflight || d.known !== editor.value) return; // repart après l'accusé de réception
+    const focused = document.activeElement === editor && !editor.readOnly;
+    const m = focused ? { t: 'caret', doc: d.id, rev: d.rev, a: editor.selectionStart, b: editor.selectionEnd } : { t: 'caret', doc: d.id, a: null };
+    const sig = `${d.id}:${m.rev}:${m.a}:${m.b}`;
+    if (sig !== live.caretSent && liveSend(m)) live.caretSent = sig;
+  }, 80);
+}
+
+function liveRemoteCaret(m) {
+  const d = live.doc;
+  if (!d || d.id !== m.doc) return;
+  if (m.a == null) {
+    live.carets.delete(m.cid);
+    return drawCarets();
+  }
+  if (!d.joined || m.rev !== d.rev) return;
+  try {
+    let a = m.a;
+    let b = m.b;
+    if (d.inflight) {
+      a = OT.index(d.inflight.op, a);
+      b = OT.index(d.inflight.op, b);
+    }
+    const local = OT.diff(d.known, editor.value);
+    a = OT.index(local, a);
+    b = OT.index(local, b);
+    const u = live.users.find((x) => x.cid === m.cid);
+    live.carets.set(m.cid, { a, b, name: u?.name || '…', color: u?.color || '#888', at: Date.now() });
+    drawCarets();
+  } catch {
+    /* curseur périmé : ignoré */
+  }
+}
+
+function liveGone(m) {
+  if (state.current?.id !== m.doc) return;
+  toast(`${m.by?.name || "Quelqu'un"} a supprimé ce document.`, { error: true });
+  live.goneDoc = m.doc; // (pas de second message pour la même suppression)
+  state.dirty = false;
+  live.doc = null;
+  state.current = null;
+  loadLibrary().catch(() => {});
+  go('#');
+}
+
+// ------------------------------------------------------------------ modifications des autres
+const refreshLibrarySoon = debounce(() => loadLibrary().catch(() => {}), 400);
+const refreshHomeSoon = debounce(() => {
+  if (!$('#view-home').hidden) showHome();
+}, 900);
+const refreshDueSoon = debounce(refreshDueCount, 1000);
+
+function liveChanged(m) {
+  const mine = !!(m.by && state.user && m.by.id === state.user.id);
+  if (m.msg && m.by && !mine && !(m.doc && m.doc === live.goneDoc)) toast(`${m.by.name} ${m.msg}`);
+  if (m.what === 'docs' || m.what === 'subjects') {
+    refreshLibrarySoon();
+    if (!mine && m.doc && m.doc === state.current?.id && m.fields?.length) refreshDocMeta();
+  }
+  if (m.what === 'events') {
+    refreshUpcoming();
+    if (!$('#view-calendar').hidden) renderCalendar();
+  }
+  if (m.what === 'cards' && !mine && m.doc === state.current?.id && state.docTab === 'cards' && !$('#pane-cards').contains(document.activeElement)) {
+    renderCardsEditor();
+  }
+  if (m.what === 'cards' || m.what === 'review') refreshDueSoon();
+  refreshHomeSoon();
+}
+
+/** Titre, matière, type… changés par quelqu'un d'autre sur le document ouvert. */
+async function refreshDocMeta() {
+  const doc = state.current;
+  let fresh;
+  try {
+    fresh = await api(`/api/documents/${doc.id}`);
+  } catch {
+    return;
+  }
+  if (state.current !== doc) return;
+  for (const k of ['title', 'kind', 'subject_id', 'parent_id', 'data', 'lang']) doc[k] = fresh[k];
+  if (document.activeElement !== $('#doc-title')) $('#doc-title').value = doc.title;
+  updateKindUI();
+  fillSubjectSelects();
+  updateLangUI();
+}
+
+// ------------------------------------------------------------------ présence
+const initials = (name) => {
+  const parts = String(name || '?').split(/[\s._-]+/).filter(Boolean);
+  return ((parts[0]?.[0] || '?') + (parts[1]?.[0] || '')).toUpperCase();
+};
+const avatarHtml = (u, title = '') =>
+  `<span class="avatar sm${u.typing ? ' typing' : ''}" style="background:${esc(u.color)}"${title ? ` title="${esc(title)}"` : ''}>${esc(initials(u.name))}</span>`;
+
+function whereLabel(u) {
+  if (u.view === 'doc' && u.doc != null) return state.docs.find((d) => d.id === u.doc)?.title || 'un document';
+  return { home: 'Accueil', calendar: 'Calendrier des examens', review: 'Révision des flashcards' }[u.view] || 'En ligne';
+}
+
+/** Les autres personnes connectées (une entrée par personne, même avec plusieurs onglets). */
+function othersOnline(docId) {
+  const byUser = new Map();
+  for (const u of live.users) {
+    if (u.id === state.user?.id || (docId !== undefined && u.doc !== docId)) continue;
+    const prev = byUser.get(u.id);
+    if (!prev || (u.typing && !prev.typing) || (u.doc != null && prev.doc == null)) byUser.set(u.id, u);
+  }
+  return [...byUser.values()].sort((a, b) => a.name.localeCompare(b.name, 'fr'));
+}
+
+function avatarStack(list, max) {
+  const html = list
+    .slice(0, max)
+    .map((u) => avatarHtml(u, `${u.name} — ${u.typing ? 'écrit dans ' : ''}${whereLabel(u)}`))
+    .join('');
+  return html + (list.length > max ? `<span class="avatar sm more">+${list.length - max}</span>` : '');
+}
+
+function renderPresence() {
+  const others = othersOnline();
+  const row = $('#online');
+  row.hidden = !live.open;
+  row.innerHTML = others.length
+    ? `<span class="live-dot"></span><span class="lbl">${others.length} en ligne</span><span class="avatar-stack">${avatarStack(others, 5)}</span>`
+    : '<span class="live-dot"></span><span class="lbl muted">Personne d\'autre en ligne</span>';
+  const m = $('#m-online');
+  m.hidden = !others.length;
+  m.innerHTML = avatarStack(others, 3);
+  renderDocPresence();
+  updateLibraryPresence();
+}
+
+/** Qui regarde / écrit dans le document ouvert. */
+function renderDocPresence() {
+  const doc = state.current;
+  const here = doc ? othersOnline(doc.id) : [];
+  const box = $('#doc-people');
+  box.hidden = !here.length;
+  box.innerHTML = avatarStack(here, 4);
+  const typing = here.filter((u) => u.typing === doc?.id).map((u) => u.name);
+  const note = $('#doc-typing');
+  note.hidden = !typing.length;
+  note.textContent = typing.length === 1 ? `✎ ${typing[0]} écrit…` : `✎ ${typing.slice(0, -1).join(', ')} et ${typing.at(-1)} écrivent…`;
+  // Curseurs : nom et couleur à jour ; on retire ceux des personnes parties du document.
+  for (const [cid, c] of live.carets) {
+    const u = live.users.find((x) => x.cid === cid && x.doc === doc?.id);
+    if (!u) live.carets.delete(cid);
+    else Object.assign(c, { name: u.name, color: u.color });
+  }
+  drawCarets();
+}
+
+/** Pastilles de couleur à côté des documents ouverts par d'autres. */
+function updateLibraryPresence() {
+  $$('#library .doc-item .here').forEach((el) => el.remove());
+  const byDoc = new Map();
+  for (const u of othersOnline()) if (u.doc != null) byDoc.set(u.doc, [...(byDoc.get(u.doc) || []), u]);
+  for (const [docId, users] of byDoc) {
+    const item = $(`#library .doc-item[data-id="${docId}"]`);
+    if (!item) continue;
+    const span = document.createElement('span');
+    span.className = 'here';
+    span.innerHTML = users
+      .slice(0, 3)
+      .map((u) => `<i class="${u.typing === docId ? 'typing' : ''}" style="background:${esc(u.color)}" title="${esc(u.name)}${u.typing === docId ? ' écrit…' : ''}"></i>`)
+      .join('');
+    item.append(span);
+  }
+}
+
+function showPeople(anchor) {
+  closeMenus();
+  const others = othersOnline();
+  const menu = document.createElement('div');
+  menu.className = 'menu floating-menu people-menu';
+  menu.innerHTML =
+    `<div class="people-head">${others.length ? `${others.length} autre${others.length > 1 ? 's' : ''} personne${others.length > 1 ? 's' : ''} en ligne` : "Personne d'autre n'est connecté"}</div>` +
+    others
+      .map((u) => {
+        const doc = u.view === 'doc' && u.doc != null ? u.doc : '';
+        const where = `${u.typing ? '✎ écrit dans ' : doc ? '👁 ' : ''}${whereLabel(u)}`;
+        return `<button data-doc="${doc}" ${doc ? 'title="Ouvrir ce document"' : 'disabled'}>${avatarHtml(u)}<span class="who"><b>${esc(u.name)}</b><small>${esc(where)}</small></span></button>`;
+      })
+      .join('');
+  menu.querySelectorAll('button[data-doc]').forEach((b) => {
+    b.onclick = (e) => {
+      e.stopPropagation();
+      closeMenus();
+      if (b.dataset.doc) go(`#doc/${b.dataset.doc}`);
+    };
+  });
+  menu.onclick = (e) => e.stopPropagation();
+  document.body.append(menu);
+  const r = anchor.getBoundingClientRect();
+  menu.style.top = `${r.bottom + 4}px`;
+  menu.style.left = `${Math.max(8, Math.min(r.left, innerWidth - 290))}px`;
+  setTimeout(() => document.addEventListener('click', closeMenus, { once: true }), 0);
+}
+
+// ------------------------------------------------------------------ curseurs des autres
+const caretMirror = document.createElement('div');
+let caretFrame = 0;
+
+function drawCarets() {
+  if (!caretFrame) caretFrame = requestAnimationFrame(drawCaretsNow);
+}
+
+function drawCaretsNow() {
+  caretFrame = 0;
+  const layer = $('#carets');
+  layer.innerHTML = '';
+  if (!live.carets.size || !state.current || editor.offsetParent === null || editor.offsetWidth === 0) return;
+  Object.assign(layer.style, {
+    left: `${editor.offsetLeft}px`,
+    top: `${editor.offsetTop}px`,
+    width: `${editor.clientWidth}px`,
+    height: `${editor.clientHeight}px`,
+  });
+  const cs = getComputedStyle(editor);
+  const padL = parseFloat(cs.paddingLeft) + parseFloat(cs.borderLeftWidth);
+  const padT = parseFloat(cs.paddingTop) + parseFloat(cs.borderTopWidth);
+  const lh = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.5;
+  const layout = `${editor.clientWidth}|${live.textVersion}|${cs.fontSize}`;
+  if (!caretMirror.isConnected) document.body.append(caretMirror);
+  for (const [cid, c] of live.carets) {
+    const pos = Math.max(0, Math.min(c.b, editor.value.length));
+    if (c.layout !== `${layout}|${pos}`) {
+      // Copie invisible du texte, mêmes polices et retours à la ligne, pour trouver la position du curseur.
+      Object.assign(caretMirror.style, {
+        position: 'absolute', visibility: 'hidden', top: '0', left: '-10000px', whiteSpace: 'pre-wrap',
+        overflowWrap: cs.overflowWrap, wordBreak: cs.wordBreak, fontFamily: cs.fontFamily, fontSize: cs.fontSize,
+        fontWeight: cs.fontWeight, lineHeight: cs.lineHeight, letterSpacing: cs.letterSpacing, tabSize: cs.tabSize,
+        fontVariantLigatures: cs.fontVariantLigatures, fontFeatureSettings: cs.fontFeatureSettings,
+        width: `${editor.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight)}px`, padding: '0', border: '0',
+      });
+      caretMirror.textContent = editor.value.slice(0, pos);
+      const mark = document.createElement('span');
+      mark.textContent = '​';
+      caretMirror.append(mark);
+      c.x = mark.offsetLeft;
+      c.y = mark.offsetTop;
+      c.layout = `${layout}|${pos}`;
+    }
+    const x = c.x + padL - editor.scrollLeft;
+    const y = c.y + padT - editor.scrollTop;
+    if (y < -lh || y > editor.clientHeight) continue;
+    const el = document.createElement('div');
+    el.className = 'rcaret' + (Date.now() - c.at > 5000 ? ' idle' : '') + (y < 18 ? ' below' : '');
+    el.style.cssText = `left:${x}px;top:${y}px;height:${lh}px;--c:${c.color}`;
+    el.innerHTML = `<span>${esc(c.name)}</span>`;
+    layer.append(el);
+  }
+  caretMirror.textContent = '';
+}
+setInterval(() => live.carets.size && drawCarets(), 2500); // l'étiquette du nom s'efface après quelques secondes
 
 // ================================================================== éditeur
 function getSel() {
@@ -1980,7 +2654,8 @@ async function runOCR() {
         } else if (ev.type === 'token') {
           chars += ev.text.length;
           $('#ocr-status').textContent = $('#ocr-status').textContent.replace(/ · \d+ car\.$/, '') + ` · ${chars} car.`;
-        } else if (ev.type === 'page_done' && state.current?.id === doc.id) {
+        } else if (ev.type === 'page_done' && state.current?.id === doc.id && !liveActive()) {
+          // (en direct, la page transcrite arrive toute seule dans l'éditeur)
           const fresh = await api(`/api/documents/${doc.id}`);
           editor.value = fresh.content;
           state.current.content = fresh.content;
@@ -2763,6 +3438,7 @@ async function submitLogin(e) {
     const resolve = login.resolve;
     login.pending = login.resolve = null;
     resolve?.();
+    liveConnect(); // (re)connexion au direct avec la nouvelle session
   } catch (err) {
     $('#login-error').textContent = err.message;
     $('#login-error').hidden = false;
@@ -2772,6 +3448,9 @@ async function submitLogin(e) {
 }
 
 async function logout() {
+  await flushSave();
+  live.stop = true;
+  live.ws?.close();
   await api('/api/auth/logout', { method: 'POST' }).catch(() => {});
   location.hash = '';
   location.reload();
@@ -3137,9 +3816,15 @@ function bindEvents() {
   });
   editor.addEventListener('input', () => {
     if (!state.current) return;
-    state.dirty = true;
-    setSaveState('Modifications…');
-    scheduleSave();
+    liveLocalChange();
+    if (liveActive()) {
+      livePush(); // en direct : envoyé tout de suite aux autres (et enregistré par le serveur)
+    } else {
+      state.dirty = true;
+      setSaveState('Modifications…');
+      scheduleSave();
+    }
+    liveSendCaret();
     renderPreview();
     updateStats();
     if (!$('#find-bar').hidden) computeMatches();
@@ -3149,9 +3834,28 @@ function bindEvents() {
     editor.addEventListener(ev, () => {
       state.previewSel = '';
       updateSelectionUI();
+      liveSendCaret();
     });
   }
+  editor.addEventListener('blur', liveSendCaret);
+  // Clavier de téléphone : un mot en cours de composition ne doit pas être modifié sous les doigts.
+  editor.addEventListener('compositionstart', () => liveHold(true));
+  editor.addEventListener('compositionend', () => setTimeout(() => liveHold(false), 0));
+  window.addEventListener('resize', drawCarets);
+  $('#online').onclick = (e) => showPeople(e.currentTarget);
+  $('#m-online').onclick = (e) => showPeople(e.currentTarget);
+  $('#doc-people').onclick = (e) => showPeople(e.currentTarget);
+  // Téléphone remis en route, réseau revenu : on se reconnecte sans attendre.
+  const reconnect = () => {
+    if (!live.ws && !live.stop && state.user && document.visibilityState === 'visible') {
+      live.retry = 0;
+      liveConnect();
+    }
+  };
+  document.addEventListener('visibilitychange', reconnect);
+  window.addEventListener('online', reconnect);
   editor.addEventListener('scroll', () => {
+    if (live.carets.size) drawCarets();
     if (!$('#editor-split').classList.contains('mode-split')) return;
     const max = editor.scrollHeight - editor.clientHeight;
     if (max > 0) preview.scrollTop = (editor.scrollTop / max) * (preview.scrollHeight - preview.clientHeight);
@@ -3370,6 +4074,7 @@ async function init() {
   applyMode(state.mode, false);
   setAITab('generate');
   await ensureLogin(); // outil partagé : connexion avant tout le reste
+  liveConnect(); // présence et modifications en direct
   try {
     state.settings = await api('/api/settings');
     await loadLibrary();

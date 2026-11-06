@@ -97,6 +97,7 @@ Une adresse DuckDNS (`duckdns.org`) ne marche pas avec un tunnel : Cloudflare n'
 | **IA — Discuter** | Chat avec le cours (les passages pertinents sont retrouvés automatiquement pour les cours longs), enregistrable comme note. |
 | **IA — Outils texte** | Sur la sélection : corriger, reformuler, simplifier, développer, résumer, structurer, exemples, traduire, ou consigne libre ; puis *Remplacer* / *Insérer après* (annulable avec Ctrl+Z). |
 | **QCM** | Quiz interactif noté (raccourcis 1–4 / Entrée), explications, historique des scores, conversion des erreurs en flashcards. |
+| **En direct** | Comme sur un Google Docs : on voit **qui est connecté** et où (« 2 en ligne » en haut de la bibliothèque, pastilles de couleur à côté des documents ouverts, avatars dans l'en-tête du document). Plusieurs personnes peuvent **écrire en même temps** dans le même cours : les frappes de chacun apparaissent en direct chez les autres, avec le **curseur et le nom** de la personne, et « ✎ Léa écrit… » en bas. Les imports, fiches générées, renommages, suppressions et examens ajoutés au calendrier s'affichent chez tout le monde sans recharger la page. |
 | **Téléphone** | Interface adaptée aux petits écrans : barre du haut, bibliothèque en tiroir (☰), assistant IA en plein écran, cours en lecture (✎ pour éditer) qui ne défilent que de haut en bas (texte, tableaux, code et formules tiennent dans la largeur), QCM, flashcards et calendrier compact. On peut l'ajouter à l'écran d'accueil (« Ajouter à l'écran d'accueil » dans le navigateur). |
 | **Flashcards** | Répétition espacée (type Anki : À revoir / Difficile / Bien / Facile), révision du jour par matière, édition des cartes, entraînement libre. |
 
@@ -117,6 +118,7 @@ app/
   office.py      conversions Word / PowerPoint → PDF (aperçu), .doc / .ppt → .docx / .pptx
                  (LibreOffice sous Linux/Docker, Microsoft Office sous Windows)
   auth.py        comptes et sessions de l'outil partagé (DL_AUTH=1)
+  live.py        temps réel (WebSocket /api/live) : présence, modifications des autres, édition à plusieurs
   db.py          SQLite (data/deeplearning.db)
   static/        interface web (HTML/CSS/JS sans build)
 run.py           lance le serveur et ouvre le navigateur

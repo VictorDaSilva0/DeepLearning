@@ -15,23 +15,25 @@ from typing import Any, AsyncIterator
 from urllib.parse import quote
 
 import httpx
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket
+from fastapi.requests import HTTPConnection
 from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import __version__, auth, config, db, importers, llm, office, prompts, render, srs
+from . import __version__, auth, config, db, importers, live, llm, office, prompts, render, srs
 
 log = logging.getLogger("deeplearning")
 LOADED_CODE = config.code_fingerprint()  # version du code chargée par ce processus
 
 # API accessible sans être connecté (le reste de /api/ exige une session quand DL_AUTH=1).
-PUBLIC_API = {"/api/version", "/api/auth/login", "/api/auth/me"}
+# /api/live (temps réel) vérifie la session lui-même.
+PUBLIC_API = {"/api/version", "/api/auth/login", "/api/auth/me", "/api/live"}
 # Avec un mot de passe provisoire, seules ces routes restent ouvertes jusqu'au changement.
 PROVISIONAL_API = {"/api/auth/password", "/api/auth/logout"}
 
 
-def require_login(request: Request) -> None:
+def require_login(request: HTTPConnection) -> None:
     """Dépendance appliquée à toutes les routes : vérifie la session pour l'API."""
     path = request.url.path
     if not path.startswith("/api/") or path in PUBLIC_API:
@@ -42,6 +44,11 @@ def require_login(request: Request) -> None:
     if user.get("must_change") and path not in PROVISIONAL_API:
         raise HTTPException(403, "Choisis d'abord un nouveau mot de passe.")
     request.state.user = user
+
+
+async def remember_user(request: HTTPConnection) -> None:
+    """Auteur de la requête, pour annoncer ses modifications aux autres (« Léa a importé… »)."""
+    live.CURRENT_USER.set(getattr(request.state, "user", None))
 
 
 def require_admin(request: Request) -> dict[str, Any]:
@@ -56,9 +63,13 @@ async def lifespan(_: FastAPI):
     db.init_db()
     auth.bootstrap_admin()
     yield
+    await live.shutdown()
 
 
-app = FastAPI(title="DeepLearning", version=__version__, lifespan=lifespan, dependencies=[Depends(require_login)])
+app = FastAPI(
+    title="DeepLearning", version=__version__, lifespan=lifespan,
+    dependencies=[Depends(require_login), Depends(remember_user)],
+)
 app.mount("/static", StaticFiles(directory=config.STATIC_DIR), name="static")
 
 KINDS = {
@@ -95,10 +106,26 @@ def _link_report(doc: dict[str, Any]) -> dict[str, Any]:
 
 # =========================================================================== utilitaires
 
+def _fresh(doc: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Document avec le texte en cours d'édition à plusieurs (en avance de quelques dixièmes de seconde sur la base)."""
+    if doc:
+        text = live.content(doc["id"])
+        if text is not None:
+            doc["content"] = text
+    return doc
+
+
 def _get_doc_or_404(doc_id: int) -> dict[str, Any]:
-    doc = db.get_document(doc_id)
+    doc = _fresh(db.get_document(doc_id))
     if not doc:
         raise HTTPException(404, "Document introuvable.")
+    return doc
+
+
+def _set_content(doc_id: int, content: str, **fields: Any) -> dict[str, Any] | None:
+    """Enregistre un nouveau texte et l'envoie aux personnes qui ont le document ouvert."""
+    doc = db.update_document(doc_id, content=content, **fields)
+    live.replace_content(doc_id, content)
     return doc
 
 
@@ -136,6 +163,12 @@ def _content_disposition(kind: str, filename: str) -> str:
 @app.get("/", response_class=HTMLResponse)
 def index() -> FileResponse:
     return FileResponse(config.STATIC_DIR / "index.html", headers={"Cache-Control": "no-cache"})
+
+
+@app.websocket("/api/live")
+async def live_channel(websocket: WebSocket) -> None:
+    """Temps réel : présence, modifications des autres, édition à plusieurs (voir live.py)."""
+    await live.serve(websocket)
 
 
 @app.get("/api/version")
@@ -249,6 +282,7 @@ def update_user(user_id: int, body: UserPatch, admin: dict = Depends(require_adm
     user = db.update_user(user_id, **fields)
     if fields.get("active") is False:
         db.delete_user_sessions(user_id)
+        live.disconnect_user(user_id)
     return auth.public(user or target)
 
 
@@ -261,6 +295,7 @@ def reset_user_password(user_id: int, admin: dict = Depends(require_admin)) -> d
     password = auth.temporary_password()
     user = db.update_user(user_id, password_hash=auth.hash_password(password), must_change=True)
     db.delete_user_sessions(user_id)
+    live.disconnect_user(user_id)
     return {"user": auth.public(user or {}), "password": password}
 
 
@@ -269,6 +304,7 @@ def delete_user(user_id: int, admin: dict = Depends(require_admin)) -> dict[str,
     if user_id == admin["id"]:
         raise HTTPException(400, "Tu ne peux pas supprimer ton propre compte.")
     db.delete_user(user_id)
+    live.disconnect_user(user_id)
     return {"ok": True}
 
 
@@ -359,9 +395,11 @@ def create_subject(body: SubjectIn) -> dict[str, Any]:
     if not body.name or not body.name.strip():
         raise HTTPException(400, "Le nom de la matière est obligatoire.")
     try:
-        return db.create_subject(body.name.strip(), body.color, body.semester or "", body.position)
+        subject = db.create_subject(body.name.strip(), body.color, body.semester or "", body.position)
     except Exception as exc:
         raise HTTPException(400, "Une matière porte déjà ce nom dans ce semestre.") from exc
+    live.notify("subjects", msg=f"a créé la matière « {subject['name']} »")
+    return subject
 
 
 @app.patch("/api/subjects/{subject_id}")
@@ -375,12 +413,16 @@ def update_subject(subject_id: int, body: SubjectIn) -> dict[str, Any]:
         raise HTTPException(400, "Une matière porte déjà ce nom dans ce semestre.") from exc
     if not subject:
         raise HTTPException(404, "Matière introuvable.")
+    live.notify("subjects")
     return subject
 
 
 @app.delete("/api/subjects/{subject_id}")
 def delete_subject(subject_id: int) -> dict[str, bool]:
+    subject = next((s for s in db.list_subjects() if s["id"] == subject_id), None)
     db.delete_subject(subject_id)
+    if subject:
+        live.notify("subjects", msg=f"a supprimé la matière « {subject['name']} »")
     return {"ok": True}
 
 
@@ -416,13 +458,15 @@ class DocumentIn(BaseModel):
 @app.post("/api/documents")
 def create_document(body: DocumentIn) -> dict[str, Any]:
     kind = body.kind if body.kind in KINDS else "note"
-    return db.create_document(
+    doc = db.create_document(
         (body.title or "Nouvelle note").strip() or "Nouvelle note",
         body.content or "",
         kind,
         body.subject_id,
         body.parent_id,
     )
+    live.notify("docs", doc=doc["id"], msg=f"a créé « {doc['title']} »")
+    return doc
 
 
 @app.patch("/api/documents/{doc_id}")
@@ -433,17 +477,27 @@ def update_document(doc_id: int, body: DocumentIn) -> dict[str, Any]:
         raise HTTPException(400, "Type de document inconnu.")
     if "title" in fields:
         fields["title"] = (fields["title"] or "").strip() or "Sans titre"
-    doc = db.update_document(doc_id, **fields)
+    content = fields.pop("content", None)
+    doc = db.update_document(doc_id, **fields) if fields else None
+    if content is not None:  # éditeur hors ligne (sans le canal temps réel)
+        doc = _set_content(doc_id, content)
+    if fields:
+        live.notify("docs", doc=doc_id, fields=sorted(fields))
+    doc = doc or db.get_document(doc_id)
     return _listing(doc) if doc else {}
 
 
 @app.delete("/api/documents/{doc_id}")
 def delete_document(doc_id: int) -> dict[str, bool]:
+    doc = db.get_document(doc_id)
     source = db.delete_document(doc_id)
     if source:
         path = config.UPLOAD_DIR / source
         path.unlink(missing_ok=True)
         office.preview_path(path).unlink(missing_ok=True)
+    if doc:
+        live.forget(doc_id)
+        live.notify("docs", doc=doc_id, msg=f"a supprimé « {doc['title']} »")
     return {"ok": True}
 
 
@@ -570,6 +624,10 @@ async def import_files(
         if "document" in r:
             full = db.get_document(r["document"]["id"])
             r["document"]["lang"] = llm.detect_language(full["content"]) if full else None
+    added = [r["document"] for r in results if "document" in r]
+    if added:
+        what = f"« {added[0]['title']} »" if len(added) == 1 else f"{len(added)} cours"
+        live.notify("docs", doc=added[0]["id"] if len(added) == 1 else None, msg=f"a importé {what}")
     return results
 
 
@@ -658,7 +716,8 @@ def _cards_markdown(title: str, cards: list[dict[str, Any]]) -> str:
 def _sync_cards_content(doc_id: int) -> None:
     doc = db.get_document(doc_id)
     if doc and doc["kind"] == "flashcards":
-        db.update_document(doc_id, content=_cards_markdown(doc["title"], db.list_cards(doc_id)))
+        _set_content(doc_id, _cards_markdown(doc["title"], db.list_cards(doc_id)))
+    live.notify("cards", doc=doc_id)
 
 
 @app.get("/api/tasks")
@@ -688,7 +747,7 @@ async def generate(body: GenerateIn) -> StreamingResponse:
     subject: tuple[str, str] | None = None
     reserve = spec["reserve"]
     if body.task == "relecture" and doc.get("parent_id"):
-        parent = db.get_document(doc["parent_id"])
+        parent = _fresh(db.get_document(doc["parent_id"]))
         if parent and parent["content"].strip():
             limit = llm.input_budget_chars(settings, reserve) // 2
             text = parent["content"]
@@ -795,6 +854,8 @@ async def _write_result(
     new_doc = db.create_document(title, content, spec["kind"], subject_id=subject_id, parent_id=parent_id, data=data)
     if cards:
         db.add_cards(new_doc["id"], cards)
+        live.notify("cards", doc=new_doc["id"])
+    live.notify("docs", doc=new_doc["id"], msg=f"a généré « {title} »")
     warning = None
     if info.get("done_reason") == "length":
         warning = "La réponse a été coupée (limite de longueur atteinte). Augmente le contexte dans les réglages."
@@ -822,7 +883,7 @@ def _generate_multi(doc: dict[str, Any], spec: dict[str, Any], body: GenerateIn)
     if not subject:
         raise HTTPException(400, "Ce document n'est rangé dans aucune matière.")
     ids = list(dict.fromkeys(body.document_ids or []))
-    docs = [d for d in (db.get_document(i) for i in ids) if d]
+    docs = [d for d in (_fresh(db.get_document(i)) for i in ids) if d]
     if any(d["subject_id"] != subject_id for d in docs):
         raise HTTPException(400, "Les documents choisis doivent appartenir à la même matière.")
     docs = [d for d in docs if (d["content"] or "").strip()]
@@ -854,7 +915,7 @@ def _generate_multi(doc: dict[str, Any], spec: dict[str, Any], body: GenerateIn)
             if len(text) > share:
                 shortened += 1
                 fiche = fiches.get(d["id"])
-                fiche_text = (db.get_document(fiche["id"]) or {}).get("content", "") if fiche else ""
+                fiche_text = (_fresh(db.get_document(fiche["id"])) or {}).get("content", "") if fiche else ""
                 if fiche_text.strip() and len(fiche_text) <= share:
                     yield {"type": "status", "message": f"« {d['title']} » est long : sa fiche de révision est utilisée."}
                     text = fiche_text
@@ -1006,7 +1067,7 @@ async def ocr_document(doc_id: int) -> StreamingResponse:
                     parts.append(ev["text"])
                     yield ev
             text = "".join(parts).strip() or "*(page vide)*"
-            current = db.get_document(doc_id)
+            current = _fresh(db.get_document(doc_id))
             if not current:
                 return
             new_content = re.sub(
@@ -1016,7 +1077,7 @@ async def ocr_document(doc_id: int) -> StreamingResponse:
                 count=1,
                 flags=re.MULTILINE,
             )
-            db.update_document(doc_id, content=new_content)
+            _set_content(doc_id, new_content)
             yield {"type": "page_done", "page": page}
         yield {"type": "done", "document": _listing(db.get_document(doc_id) or doc)}
 
@@ -1084,7 +1145,7 @@ async def translate_document(doc_id: int) -> StreamingResponse:
                 title = new_title
         except llm.OllamaError:
             pass
-        current = db.get_document(doc_id)
+        current = _fresh(db.get_document(doc_id))
         if not current:
             return
         new_data = dict(current["data"]) if isinstance(current.get("data"), dict) else {}
@@ -1092,7 +1153,8 @@ async def translate_document(doc_id: int) -> StreamingResponse:
             "from": "en", "to": "fr", "model": model, "date": db.now(),
             "original_title": current["title"], "original_content": current["content"],
         }
-        updated = db.update_document(doc_id, title=title, content="\n\n".join(parts) + "\n", data=new_data)
+        updated = _set_content(doc_id, "\n\n".join(parts) + "\n", title=title, data=new_data)
+        live.notify("docs", doc=doc_id, fields=["title", "data"], msg=f"a traduit « {title} » en français")
         yield {"type": "done", "document": _listing(updated or current)}
 
     return _ndjson(run())
@@ -1105,9 +1167,8 @@ def untranslate_document(doc_id: int) -> dict[str, Any]:
     tr = data.pop("translation", None)
     if not tr:
         raise HTTPException(400, "Ce document n'a pas été traduit.")
-    updated = db.update_document(
-        doc_id, title=tr["original_title"], content=tr["original_content"], data=data or None
-    )
+    updated = _set_content(doc_id, tr["original_content"], title=tr["original_title"], data=data or None)
+    live.notify("docs", doc=doc_id, fields=["title", "data"])
     return _listing(updated or doc)
 
 
@@ -1175,6 +1236,7 @@ def review_card(card_id: int, body: ReviewIn) -> dict[str, Any]:
         raise HTTPException(404, "Carte introuvable.")
     updated = db.update_card(card_id, **srs.schedule(card, body.grade))
     updated["intervals"] = srs.preview_intervals(updated)
+    live.notify("review")  # progression commune : le nombre de cartes du jour change pour tout le monde
     return updated
 
 
@@ -1228,7 +1290,9 @@ def create_event(body: EventIn) -> dict[str, Any]:
     if not fields.get("title"):
         subject = next((s for s in db.list_subjects() if s["id"] == fields.get("subject_id")), None)
         fields["title"] = f"{EVENT_LABELS[fields['kind']]}" + (f" — {subject['name']}" if subject else "")
-    return db.create_event(**fields)
+    event = db.create_event(**fields)
+    live.notify("events", msg=f"a ajouté « {event['title']} » au calendrier")
+    return event
 
 
 @app.patch("/api/events/{event_id}")
@@ -1238,12 +1302,17 @@ def update_event(event_id: int, body: EventIn) -> dict[str, Any]:
     fields = _clean_event(body.model_dump(exclude_unset=True))
     if "title" in fields and not fields["title"]:
         raise HTTPException(400, "Le titre ne peut pas être vide.")
-    return db.update_event(event_id, **fields) or {}
+    event = db.update_event(event_id, **fields) or {}
+    live.notify("events")
+    return event
 
 
 @app.delete("/api/events/{event_id}")
 def delete_event(event_id: int) -> dict[str, bool]:
+    event = db.get_event(event_id)
     db.delete_event(event_id)
+    if event:
+        live.notify("events", msg=f"a retiré « {event['title']} » du calendrier")
     return {"ok": True}
 
 

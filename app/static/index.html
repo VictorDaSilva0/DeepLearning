@@ -9,12 +9,12 @@
   <meta name="apple-mobile-web-app-title" content="Révision">
   <title>DeepLearning — atelier de révision</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧠</text></svg>">
-  <link rel="stylesheet" href="/static/style.css?v=13">
+  <link rel="stylesheet" href="/static/style.css?v=14">
   <!-- KaTeX (formules) : optionnel, chargé depuis un CDN quand Internet est disponible. -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
-  <script defer src="/static/app.js?v=13"></script>
+  <script defer src="/static/app.js?v=14"></script>
 </head>
 <body>
 <div id="app" class="layout">
@@ -25,6 +25,9 @@
       <span class="brand-logo">🧠</span>
       <span><b>DeepLearning</b><small>atelier de révision</small></span>
     </a>
+
+    <!-- Qui est connecté (temps réel) -->
+    <button id="online" class="online-row" title="Qui est en ligne ?" hidden></button>
 
     <div class="side-actions">
       <button id="btn-import" class="btn primary">⬆ Importer</button>
@@ -70,6 +73,7 @@
       <button id="m-menu" class="icon-btn" title="Bibliothèque" aria-label="Ouvrir la bibliothèque">☰</button>
       <a href="#" class="m-brand"><span class="brand-logo">🧠</span><b>Révision</b></a>
       <span class="spacer"></span>
+      <button id="m-online" class="avatar-stack m-online" title="Qui est en ligne ?" aria-label="Personnes en ligne" hidden></button>
       <button id="m-calendar" class="icon-btn" title="Examens" aria-label="Calendrier des examens">📅</button>
       <button id="m-review" class="icon-btn m-review" title="Réviser" aria-label="Réviser les flashcards">🃏<b id="m-due" hidden></b></button>
       <button id="m-ai" class="btn small accent" title="Assistant IA">✨ IA</button>
@@ -140,6 +144,7 @@
         <input id="doc-title" class="doc-title" placeholder="Titre" maxlength="300">
         <select id="doc-subject" class="select small" title="Matière"></select>
         <div class="spacer"></div>
+        <div id="doc-people" class="avatar-stack" hidden></div>
         <div id="mode-switch" class="seg" role="group" aria-label="Affichage">
           <button data-mode="edit" title="Éditeur seul">✎</button>
           <button data-mode="split" title="Éditeur + aperçu">◫</button>
@@ -214,6 +219,7 @@
         <div id="editor-split" class="editor-split">
           <textarea id="editor" spellcheck="true" placeholder="Écris ici en Markdown… (# Titre, **gras**, - liste, $formule$)"></textarea>
           <article id="preview" class="markdown"></article>
+          <div id="carets" class="carets" aria-hidden="true"></div>
         </div>
 
         <footer class="statusbar">
@@ -221,6 +227,7 @@
           <span id="doc-source" class="muted"></span>
           <span id="doc-translated" class="muted" hidden>🌐 Traduit de l'anglais par l'IA · <button class="link" id="btn-untranslate">revenir à l'anglais</button></span>
           <span class="spacer"></span>
+          <span id="doc-typing" class="typing-note" hidden></span>
           <span id="save-state" class="muted"></span>
         </footer>
       </div>
