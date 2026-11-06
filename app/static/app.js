@@ -262,6 +262,12 @@ const CATEGORIES = [
   { kind: 'rendu', short: 'CR', label: 'Comptes-rendus' },
 ];
 const SOURCE_KINDS = CATEGORIES.map((c) => c.kind);
+/** Types proposés pour changer le type d'un document (QCM et flashcards exclus : ils se créent avec l'IA). */
+const KIND_GROUPS = [
+  ['Cours', ['cours', 'td', 'tp', 'annale', 'examen', 'rendu']],
+  ['Notes et fiches', ['note', 'fiche', 'resume', 'exercices', 'corrige', 'questions', 'explication', 'glossaire', 'plan', 'relecture']],
+];
+const FIXED_KINDS = ['qcm', 'flashcards'];
 
 /** Même détection que le serveur : « TD2_routage.pdf » → td, « TP-Docker.pptx » → tp, « Compte-rendu… » → CR,
  *  « Partiel 2024 », « DS1 », « Examen… » → contrôle d'une année précédente, sinon CM. */
@@ -851,7 +857,8 @@ async function openDoc(id, { force = false } = {}) {
 function updateKindUI() {
   const doc = state.current;
   const kind = KINDS[doc.kind] || { icon: '📄', label: doc.kind };
-  const editable = SOURCE_KINDS.includes(doc.kind) || doc.kind === 'note';
+  // Tout document texte peut changer de type (une note écrite à la main → CM, une fiche → résumé…).
+  const editable = !FIXED_KINDS.includes(doc.kind) && !!KINDS[doc.kind];
   $('#doc-kind').textContent = `${kind.icon} ${kind.label}`;
   $('#doc-kind').hidden = editable;
   $('#doc-category').hidden = !editable;
@@ -954,19 +961,31 @@ async function changeKind() {
   const doc = state.current;
   if (!doc) return;
   const kind = $('#doc-category').value;
+  let saved;
   try {
-    await api(`/api/documents/${doc.id}`, { method: 'PATCH', body: { kind } });
+    saved = await api(`/api/documents/${doc.id}`, { method: 'PATCH', body: { kind } });
   } catch (e) {
     toast(e.message, { error: true });
     $('#doc-category').value = doc.kind;
     return;
   }
+  // Le serveur peut aussi détacher le document de son document d'origine (un CM se range avec les CM).
   doc.kind = kind;
+  doc.parent_id = saved.parent_id ?? null;
   const entry = state.docs.find((d) => d.id === doc.id);
-  if (entry) entry.kind = kind;
+  if (entry) Object.assign(entry, { kind, parent_id: doc.parent_id });
   updateKindUI();
   renderLibrary();
-  toast(`Classé en ${KINDS[kind].label}.`);
+  refreshAIPanel(); // tâches proposées selon le type (corrigé, sujet d'entraînement…)
+  const where = doc.subject_id == null ? ' Choisis aussi sa matière (à côté du titre) pour le ranger.' : '';
+  toast(`${KINDS[kind].icon} Ce document est maintenant : ${KINDS[kind].label}.${where}`);
+}
+
+/** Options du sélecteur de type, regroupées (Cours / Notes et fiches). */
+function fillKindSelect() {
+  $('#doc-category').innerHTML = KIND_GROUPS.map(
+    ([group, kinds]) => `<optgroup label="${esc(group)}">${kinds.map((k) => `<option value="${k}">${KINDS[k].icon} ${esc(KINDS[k].label)}</option>`).join('')}</optgroup>`,
+  ).join('');
 }
 
 function setupDocTabs(keep) {
@@ -4632,6 +4651,7 @@ function bindEvents() {
 }
 
 async function init() {
+  fillKindSelect();
   bindEvents();
   renderTaskGrid();
   renderToolGrid();

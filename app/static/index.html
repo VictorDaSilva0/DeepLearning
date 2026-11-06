@@ -9,12 +9,12 @@
   <meta name="apple-mobile-web-app-title" content="Révision">
   <title>DeepLearning — atelier de révision</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧠</text></svg>">
-  <link rel="stylesheet" href="/static/style.css?v=16">
+  <link rel="stylesheet" href="/static/style.css?v=17">
   <!-- KaTeX (formules) : optionnel, chargé depuis un CDN quand Internet est disponible. -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
-  <script defer src="/static/app.js?v=16"></script>
+  <script defer src="/static/app.js?v=17"></script>
 </head>
 <body>
 <div id="app" class="layout">
@@ -136,15 +136,8 @@
     <section id="view-doc" class="view doc" hidden>
       <header class="doc-header">
         <span id="doc-kind" class="badge"></span>
-        <select id="doc-category" class="select small badge-select" title="Type de document" hidden>
-          <option value="cours">📘 CM</option>
-          <option value="td">📗 TD</option>
-          <option value="tp">🔧 TP</option>
-          <option value="annale">📜 Contrôle année précédente</option>
-          <option value="examen">🎯 Examen d'entraînement</option>
-          <option value="rendu">📑 Compte-rendu</option>
-          <option value="note">📝 Note</option>
-        </select>
+        <!-- Type du document, modifiable (ex. une note écrite à la main → CM) ; options remplies par app.js -->
+        <select id="doc-category" class="select small badge-select" title="Type du document — clique pour le changer (ex. Note → CM)" hidden></select>
         <select id="doc-parent" class="select small" title="Sujet de TD / TP auquel répond ce compte-rendu" hidden></select>
         <input id="doc-title" class="doc-title" placeholder="Titre" maxlength="300">
         <select id="doc-subject" class="select small" title="Matière"></select>

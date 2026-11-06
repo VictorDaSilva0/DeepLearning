@@ -473,14 +473,26 @@ def create_document(body: DocumentIn) -> dict[str, Any]:
 
 @app.patch("/api/documents/{doc_id}")
 def update_document(doc_id: int, body: DocumentIn) -> dict[str, Any]:
-    _get_doc_or_404(doc_id)
+    current = _get_doc_or_404(doc_id)
     fields = body.model_dump(exclude_unset=True)
     if "kind" in fields and fields["kind"] not in KINDS:
         raise HTTPException(400, "Type de document inconnu.")
+    if "kind" in fields and fields["kind"] != current["kind"]:
+        # Changement de type (ex. une note écrite à la main → CM).
+        if {fields["kind"], current["kind"]} & {"qcm", "flashcards"}:
+            raise HTTPException(400, "Les QCM et les flashcards ne changent pas de type : crée-les avec l'IA.")
+        if fields["kind"] in SOURCE_KINDS and current.get("parent_id") and "parent_id" not in fields:
+            # Un CM, TD, TP… se range dans sa catégorie, plus sous le document dont il venait
+            # (sauf un compte-rendu déjà rattaché à son sujet de TD / TP).
+            parent = db.get_document(current["parent_id"])
+            if not (fields["kind"] == "rendu" and parent and parent["kind"] in ("td", "tp")):
+                fields["parent_id"] = None
     if "title" in fields:
         fields["title"] = (fields["title"] or "").strip() or "Sans titre"
     content = fields.pop("content", None)
     doc = db.update_document(doc_id, **fields) if fields else None
+    if doc and fields.get("kind") == "rendu" and current["kind"] != "rendu":
+        doc = _link_report(doc)  # devenu compte-rendu : rattaché à son sujet de TD / TP s'il est évident
     if content is not None:  # éditeur hors ligne (sans le canal temps réel)
         doc = _set_content(doc_id, content)
     if fields:
