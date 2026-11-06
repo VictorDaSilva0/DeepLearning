@@ -470,6 +470,7 @@ function renderLibrary() {
   }
   nav.scrollTop = scroll;
   updateLibraryPresence();
+  updateLibraryTalk();
 }
 
 function subjectGroup(g, docs, byId, exam) {
@@ -610,7 +611,8 @@ function subjectMenu(anchor, subject) {
     { label: '📅 Ajouter un examen', run: () => openEventDialog(null, { subject_id: subject.id }) },
     { label: '🃏 Réviser ses flashcards', run: () => { state.reviewSubject = subject.id; go('#review'); } },
     { label: '✎ Modifier (nom, semestre, couleur)', run: () => openSubjectDialog(subject) },
-    { label: '🗑 Supprimer la matière', danger: true, run: () => deleteSubject(subject) },
+    // Supprimer : réservé aux administrateurs (le serveur le refuse aussi aux autres).
+    ...(isAdmin() ? [{ label: '🗑 Supprimer la matière', danger: true, run: () => deleteSubject(subject) }] : []),
   ]);
 }
 
@@ -705,6 +707,7 @@ async function leaveDoc() {
   live.carets.clear();
   drawCarets();
   state.current = null;
+  talkDocChanged(); // le chat repasse sur le fil général
   state.keyMode = null;
   highlightActive();
   refreshAIPanel();
@@ -817,6 +820,7 @@ async function openDoc(id, { force = false } = {}) {
   liveOpenDoc(doc);
   liveWhere(); // rejoint le document : version en direct + curseurs des autres
   renderDocPresence();
+  talkDocChanged();
   $('#btn-source').hidden = !doc.source_file;
   $('#doc-source').textContent = doc.source_name ? `Source : ${doc.source_name}` : '';
   setSaveState('');
@@ -1422,6 +1426,7 @@ function liveConnect() {
     live.retry = 0;
     live.where = '';
     liveWhere();
+    talkResync(); // messages arrivés pendant la coupure
     clearInterval(live.pingTimer);
     live.pingTimer = setInterval(() => liveSend({ t: 'ping' }), 25000); // Cloudflare coupe au bout de 100 s sans échange
   };
@@ -1503,6 +1508,15 @@ function liveReceive(m) {
       break;
     case 'changed':
       liveChanged(m);
+      break;
+    case 'chat':
+      talkAdd(m.message);
+      break;
+    case 'chat_deleted':
+      talkDeleted(m);
+      break;
+    case 'chat_typing':
+      talkTyping(m);
       break;
     case 'error':
       toast(m.message, { error: true });
@@ -1791,12 +1805,13 @@ function renderPresence() {
   row.hidden = !live.open;
   row.innerHTML = others.length
     ? `<span class="live-dot"></span><span class="lbl">${others.length} en ligne</span><span class="avatar-stack">${avatarStack(others, 5)}</span>`
-    : '<span class="live-dot"></span><span class="lbl muted">Personne d\'autre en ligne</span>';
+    : '<span class="live-dot"></span><span class="lbl muted" title="Personne d\'autre n\'est connecté">Personne d\'autre</span>';
   const m = $('#m-online');
   m.hidden = !others.length;
   m.innerHTML = avatarStack(others, 3);
   renderDocPresence();
   updateLibraryPresence();
+  renderTalkSub();
 }
 
 /** Qui regarde / écrit dans le document ouvert. */
@@ -1922,6 +1937,285 @@ function drawCaretsNow() {
   caretMirror.textContent = '';
 }
 setInterval(() => live.carets.size && drawCarets(), 2500); // l'étiquette du nom s'efface après quelques secondes
+
+// ================================================================== chat entre utilisateurs
+/* Un fil général et un fil par document. Les messages arrivent en direct par le canal temps réel ;
+ * les non-lus sont comptés par le serveur pour chacun (badges 💬). */
+const talk = {
+  open: false,
+  channel: 'general', // 'general' ou 'doc' (le document ouvert)
+  threads: new Map(), // 0 (général) ou id du document → { list, loaded, more, loading }
+  unread: {}, // fil → nombre de messages non lus
+  typing: new Map(), // fil → Map(cid → { id, name, until })
+  typingSent: 0,
+  pendingDoc: null,
+};
+const talkKey = () => (talk.channel === 'doc' && state.current ? state.current.id : 0);
+function thread(key) {
+  if (!talk.threads.has(key)) talk.threads.set(key, { list: [], loaded: false, more: false, loading: false });
+  return talk.threads.get(key);
+}
+const talkText = (s) =>
+  esc(s)
+    .replace(/(https?:\/\/[^\s<]+[^\s<.,;:!?)])/g, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>')
+    .replace(/\n/g, '<br>');
+function dayLabel(d) {
+  const today = new Date();
+  const yesterday = new Date(Date.now() - 86400000);
+  if (d.toDateString() === today.toDateString()) return "Aujourd'hui";
+  if (d.toDateString() === yesterday.toDateString()) return 'Hier';
+  return d.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
+}
+function setBadge(el, n) {
+  if (!el) return;
+  el.hidden = !n;
+  el.textContent = n > 99 ? '99+' : String(n || '');
+}
+
+function openTalk(channel) {
+  if (channel) talk.channel = channel;
+  else {
+    // Sans précision : le fil du document ouvert, sauf s'il n'y a du nouveau que dans le général.
+    const docUnread = state.current ? talk.unread[state.current.id] || 0 : 0;
+    talk.channel = state.current && (docUnread || !talk.unread[0]) ? 'doc' : 'general';
+  }
+  talk.open = true;
+  $('#talk-panel').hidden = false;
+  setNav(false);
+  showTalk();
+  if (!isPhone()) setTimeout(() => $('#talk-text').focus(), 30);
+}
+
+function closeTalk() {
+  talk.open = false;
+  $('#talk-panel').hidden = true;
+}
+
+/** Affiche le fil choisi (chargé depuis le serveur la première fois). */
+async function showTalk() {
+  const key = talkKey();
+  renderTalk(true);
+  const t = thread(key);
+  if (!t.loaded && !t.loading) {
+    t.loading = true;
+    try {
+      const list = await api(`/api/messages${key ? `?document_id=${key}` : ''}`);
+      Object.assign(t, { list, loaded: true, more: list.length >= 60 });
+    } catch (e) {
+      toast(e.message, { error: true });
+    } finally {
+      t.loading = false;
+    }
+    if (talk.open && talkKey() === key) renderTalk(true);
+  }
+  talkMarkRead(key);
+}
+
+function renderTalk(toBottom = false) {
+  if (!talk.open) return;
+  const key = talkKey();
+  const [docTab, genTab] = $$('#talk-tabs button');
+  docTab.hidden = !state.current;
+  docTab.classList.toggle('active', key !== 0);
+  genTab.classList.toggle('active', key === 0);
+  renderTalkSub();
+  const t = thread(key);
+  const box = $('#talk-messages');
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+  if (!t.loaded) {
+    box.innerHTML = '<div class="talk-empty"><span class="spinner"></span></div>';
+  } else if (!t.list.length) {
+    box.innerHTML = `<div class="talk-empty">${
+      key ? 'Aucun message sur ce document.<br>Pose une question, signale une erreur, partage une astuce…' : "Aucun message pour l'instant.<br>Dis bonjour à tout le monde 👋"
+    }</div>`;
+  } else {
+    let html = t.more ? '<button type="button" class="link talk-more">Messages précédents…</button>' : '';
+    let prev = null;
+    for (const m of t.list) {
+      const d = new Date(m.created_at);
+      const pd = prev && new Date(prev.created_at);
+      if (!pd || pd.toDateString() !== d.toDateString()) {
+        html += `<div class="talk-day">${esc(dayLabel(d))}</div>`;
+        prev = null;
+      }
+      const mine = m.user_id === state.user?.id;
+      const grouped = prev && prev.user_id === m.user_id && d - pd < 5 * 60000;
+      const time = d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+      html += `<div class="talk-msg${mine ? ' mine' : ''}${grouped ? ' grouped' : ''}" data-id="${m.id}">${
+        mine || grouped ? '' : `<span class="avatar sm" style="background:${esc(m.color)}">${esc(initials(m.author))}</span>`
+      }<div class="body">${
+        grouped ? '' : `<div class="meta">${mine ? '' : `<b style="color:${esc(m.color)}">${esc(m.author)}</b>`}<span>${time}</span></div>`
+      }<div class="text" title="${esc(d.toLocaleString('fr-FR'))}">${talkText(m.content)}</div></div><button type="button" class="del admin-only" data-del="${m.id}" title="Supprimer ce message">🗑</button></div>`;
+      prev = m;
+    }
+    box.innerHTML = html;
+  }
+  if (toBottom || atBottom) box.scrollTop = box.scrollHeight;
+  renderTalkTyping();
+  renderTalkBadges();
+}
+
+function renderTalkSub() {
+  if (!talk.open) return;
+  const key = talkKey();
+  const doc = state.current;
+  const here = key ? othersOnline(doc.id) : othersOnline();
+  const who = here.length
+    ? `<span class="avatar-stack">${avatarStack(here, 4)}</span>`
+    : '<span class="muted">personne d\'autre ici</span>';
+  $('#talk-sub').innerHTML = `<span class="txt">${key ? `Sur <b>${esc(doc.title)}</b>` : 'Discussion générale, avec tout le monde'}</span>${who}`;
+}
+
+function renderTalkTyping() {
+  if (!talk.open) return;
+  const now = Date.now();
+  const names = [...(talk.typing.get(talkKey())?.values() || [])].filter((v) => v.until > now && v.id !== state.user?.id).map((v) => v.name);
+  const unique = [...new Set(names)];
+  const el = $('#talk-typing');
+  el.hidden = !unique.length;
+  el.textContent = unique.length === 1 ? `${unique[0]} écrit…` : `${unique.slice(0, -1).join(', ')} et ${unique.at(-1)} écrivent…`;
+}
+
+function renderTalkBadges() {
+  const total = Object.values(talk.unread).reduce((a, n) => a + (n || 0), 0);
+  setBadge($('#btn-talk .badge-count'), total);
+  setBadge($('#m-talk .badge-count'), total);
+  setBadge($('#btn-chat-doc .badge-count'), state.current ? talk.unread[state.current.id] || 0 : 0);
+  const [docTab, genTab] = $$('#talk-tabs button');
+  setBadge($('.badge-count', docTab), state.current && talkKey() === 0 ? talk.unread[state.current.id] || 0 : 0);
+  setBadge($('.badge-count', genTab), talkKey() !== 0 ? talk.unread[0] || 0 : 0);
+  updateLibraryTalk();
+}
+
+/** Pastille « 💬 2 » à côté des documents qui ont des messages non lus. */
+function updateLibraryTalk() {
+  $$('#library .doc-item .talk-n').forEach((el) => el.remove());
+  for (const [key, n] of Object.entries(talk.unread)) {
+    const item = +key && n ? $(`#library .doc-item[data-id="${key}"]`) : null;
+    if (item) item.insertAdjacentHTML('beforeend', `<span class="talk-n" title="${n} message(s) non lu(s) sur ce document">💬 ${n > 99 ? '99+' : n}</span>`);
+  }
+}
+
+function talkMarkRead(key) {
+  const t = thread(key);
+  const last = t.list.at(-1)?.id;
+  const had = talk.unread[key];
+  talk.unread[key] = 0;
+  renderTalkBadges();
+  if (last && (had || t.readSent !== last)) {
+    t.readSent = last;
+    api('/api/messages/read', { method: 'POST', body: { channel: key, last_id: last } }).catch(() => {});
+  }
+}
+
+async function refreshTalkUnread() {
+  try {
+    const u = await api('/api/messages/unread');
+    talk.unread = { 0: u.general, ...Object.fromEntries(Object.entries(u.docs).map(([k, n]) => [+k, n])) };
+  } catch {
+    return;
+  }
+  if (talk.open && document.visibilityState === 'visible') talk.unread[talkKey()] = 0;
+  renderTalkBadges();
+}
+
+/** Après une coupure : on recharge les fils (des messages ont pu arriver entre-temps). */
+function talkResync() {
+  for (const t of talk.threads.values()) t.loaded = false;
+  refreshTalkUnread();
+  if (talk.open) showTalk();
+}
+
+async function sendTalk() {
+  const input = $('#talk-text');
+  const content = input.value.trim();
+  if (!content) return;
+  const key = talkKey();
+  input.value = '';
+  autosizeTalk();
+  try {
+    talkAdd(await api('/api/messages', { method: 'POST', body: { document_id: key || null, content } }));
+  } catch (e) {
+    input.value = content;
+    autosizeTalk();
+    toast(e.message, { error: true });
+  }
+}
+
+/** Nouveau message (le mien, ou reçu en direct). */
+function talkAdd(m) {
+  const key = m.document_id || 0;
+  const t = thread(key);
+  if (t.loaded && !t.list.some((x) => x.id === m.id)) t.list.push(m);
+  for (const [cid, v] of talk.typing.get(key) || []) if (v.id === m.user_id) talk.typing.get(key).delete(cid);
+  const mine = m.user_id === state.user?.id;
+  const visible = talk.open && talkKey() === key && document.visibilityState === 'visible';
+  if (visible) {
+    renderTalk(mine);
+    talkMarkRead(key);
+    return;
+  }
+  if (mine) return;
+  talk.unread[key] = (talk.unread[key] || 0) + 1;
+  renderTalkBadges();
+  const title = key ? state.docs.find((d) => d.id === key)?.title || 'un document' : '';
+  const preview = m.content.length > 90 ? m.content.slice(0, 90) + '…' : m.content;
+  toast(`💬 ${m.author}${key ? ` sur « ${title} »` : ''} : ${preview}`, {
+    action: { label: 'Répondre', run: () => (key ? openDocTalk(key) : openTalk('general')) },
+  });
+}
+
+function openDocTalk(id) {
+  if (state.current?.id === id && !$('#view-doc').hidden) return openTalk('doc');
+  talk.pendingDoc = id; // ouvert dès que le document est chargé (openDoc → talkDocChanged)
+  go(`#doc/${id}`);
+}
+
+/** Changement de document : le fil « Ce document » suit. */
+function talkDocChanged() {
+  if (talk.pendingDoc && talk.pendingDoc === state.current?.id) {
+    talk.pendingDoc = null;
+    openTalk('doc');
+    return;
+  }
+  if (talk.open) showTalk();
+  else renderTalkBadges();
+}
+
+function talkDeleted(m) {
+  const key = m.doc || 0;
+  const t = thread(key);
+  t.list = t.list.filter((x) => x.id !== m.id);
+  if (talk.open && talkKey() === key) renderTalk(false);
+}
+
+function talkTyping(m) {
+  const key = m.doc || 0;
+  if (!talk.typing.has(key)) talk.typing.set(key, new Map());
+  talk.typing.get(key).set(m.cid, { id: m.id, name: m.name, until: Date.now() + 4000 });
+  renderTalkTyping();
+  setTimeout(renderTalkTyping, 4100);
+}
+
+async function loadOlderTalk() {
+  const key = talkKey();
+  const t = thread(key);
+  const first = t.list[0]?.id;
+  if (!first) return;
+  const older = await api(`/api/messages?before=${first}${key ? `&document_id=${key}` : ''}`);
+  const box = $('#talk-messages');
+  const fromBottom = box.scrollHeight - box.scrollTop;
+  t.list = [...older, ...t.list];
+  t.more = older.length >= 60;
+  renderTalk(false);
+  box.scrollTop = box.scrollHeight - fromBottom;
+}
+
+function autosizeTalk() {
+  const ta = $('#talk-text');
+  ta.style.height = 'auto';
+  ta.style.height = `${Math.min(140, ta.scrollHeight + 2)}px`;
+}
 
 // ================================================================== éditeur
 function getSel() {
@@ -3149,7 +3443,7 @@ async function renderCardsEditor() {
     row.innerHTML = `
       <textarea data-f="front">${esc(c.front)}</textarea>
       <textarea data-f="back">${esc(c.back)}</textarea>
-      <button class="icon-btn danger" title="Supprimer la carte">🗑</button>
+      <button class="icon-btn danger admin-only" title="Supprimer la carte">🗑</button>
       <div class="meta">Prochaine révision : ${fmtDate(c.due)} · ${c.reps} révision(s) réussie(s) d'affilée · ${c.lapses} oubli(s)</div>`;
     $$('textarea', row).forEach((ta) => {
       const original = { value: ta.value };
@@ -3302,7 +3596,7 @@ function openEventDialog(event = null, defaults = {}) {
   $('#ev-title').value = event?.title || '';
   $('#ev-location').value = v.location || '';
   $('#ev-notes').value = v.notes || '';
-  $('#ev-delete').hidden = !event;
+  $('#ev-delete').hidden = !event || !isAdmin();
   $('#dlg-event').showModal();
 }
 
@@ -3552,6 +3846,8 @@ const isAdmin = () => !state.authEnabled || !!state.user?.is_admin;
 function setUser(user, enabled) {
   state.user = user;
   state.authEnabled = !!enabled;
+  // Les boutons de suppression (classe admin-only) ne s'affichent que pour les administrateurs.
+  document.body.classList.toggle('not-admin', !isAdmin());
   $('#btn-account').hidden = !state.authEnabled || !user;
   if (user) {
     $('#account-name').textContent = user.username;
@@ -3982,6 +4278,7 @@ function bindEvents() {
   };
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && $('#app').classList.contains('nav-open')) setNav(false);
+    else if (e.key === 'Escape' && talk.open && !document.querySelector('dialog[open]')) closeTalk();
   });
   phoneQuery.addEventListener('change', () => {
     setNav(false);
@@ -4028,6 +4325,48 @@ function bindEvents() {
   editor.addEventListener('compositionend', () => setTimeout(() => liveHold(false), 0));
   window.addEventListener('resize', drawCarets);
   $('#online').onclick = (e) => showPeople(e.currentTarget);
+  // Chat entre utilisateurs
+  const toggleTalk = (channel) => (talk.open && (!channel || talk.channel === channel) ? closeTalk() : openTalk(channel));
+  $('#btn-talk').onclick = () => toggleTalk();
+  $('#m-talk').onclick = () => toggleTalk();
+  $('#btn-chat-doc').onclick = () => toggleTalk('doc');
+  $('#talk-close').onclick = closeTalk;
+  $('#talk-tabs').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-ch]');
+    if (!b || b.dataset.ch === talk.channel) return;
+    talk.channel = b.dataset.ch;
+    showTalk();
+  });
+  $('#talk-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    sendTalk();
+  });
+  $('#talk-text').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      sendTalk();
+    }
+  });
+  $('#talk-text').addEventListener('input', () => {
+    autosizeTalk();
+    if (Date.now() - talk.typingSent > 2500 && $('#talk-text').value.trim()) {
+      talk.typingSent = Date.now();
+      liveSend({ t: 'chat_typing', doc: talkKey() || null });
+    }
+  });
+  $('#talk-messages').addEventListener('click', async (e) => {
+    if (e.target.closest('.talk-more')) return loadOlderTalk();
+    const del = e.target.closest('[data-del]');
+    if (!del || !confirm('Supprimer ce message pour tout le monde ?')) return;
+    try {
+      await api(`/api/messages/${del.dataset.del}`, { method: 'DELETE' });
+    } catch (err) {
+      toast(err.message, { error: true });
+    }
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && talk.open) talkMarkRead(talkKey());
+  });
   $('#m-online').onclick = (e) => showPeople(e.currentTarget);
   $('#doc-people').onclick = (e) => showPeople(e.currentTarget);
   // Téléphone remis en route, réseau revenu : on se reconnecte sans attendre.

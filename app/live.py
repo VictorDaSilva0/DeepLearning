@@ -448,6 +448,9 @@ async def _handle(client: Client, msg: dict[str, Any]) -> None:
         ld = docs.get(client.doc_id) if client.doc_id is not None else None
         if ld and msg.get("doc") == ld.id:
             _send(client, _joined(client, ld))
+    elif t == "chat_typing":  # « Léa écrit… » dans le chat (fil général ou d'un document)
+        doc = msg.get("doc") if isinstance(msg.get("doc"), int) else None
+        _broadcast({"t": "chat_typing", "doc": doc} | client.public, to=lambda c: c is not client)
     elif t == "ping":
         _send(client, {"t": "pong"})
 
@@ -572,6 +575,15 @@ def notify(what: str, *, doc: int | None = None, msg: str | None = None, fields:
     """Annonce une modification (bibliothèque, calendrier, flashcards…) à tous les onglets ouverts."""
     payload = {"t": "changed", "what": what, "doc": doc, "msg": msg, "fields": fields or [], "by": _author()}
     _in_loop(_broadcast, payload)
+
+
+def chat_message(message: dict[str, Any]) -> None:
+    """Nouveau message de chat : envoyé à tous (pour le fil ouvert et les compteurs de non-lus)."""
+    _in_loop(_broadcast, {"t": "chat", "message": message})
+
+
+def chat_deleted(message: dict[str, Any]) -> None:
+    _in_loop(_broadcast, {"t": "chat_deleted", "id": message["id"], "doc": message["document_id"]})
 
 
 def _disconnect(user_id: int) -> None:

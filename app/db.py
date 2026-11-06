@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any, Iterator
 
 from . import config
@@ -105,6 +105,25 @@ CREATE TABLE IF NOT EXISTS sessions (
     last_seen   TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+
+-- Chat entre les utilisateurs : un fil général (document_id NULL) et un fil par document.
+CREATE TABLE IF NOT EXISTS messages (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    document_id  INTEGER REFERENCES documents(id) ON DELETE CASCADE,
+    user_id      INTEGER,                        -- sans clé étrangère : le message reste si le compte disparaît
+    author       TEXT NOT NULL,
+    content      TEXT NOT NULL,
+    created_at   TEXT NOT NULL                   -- UTC, ISO 8601 avec « Z »
+);
+CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages(document_id, id);
+
+-- Dernier message lu par chacun dans chaque fil (0 = fil général, sinon id du document).
+CREATE TABLE IF NOT EXISTS chat_reads (
+    user_id  INTEGER NOT NULL,
+    channel  INTEGER NOT NULL,
+    last_id  INTEGER NOT NULL,
+    PRIMARY KEY (user_id, channel)
+);
 """
 
 USER_COLUMNS = "id, username, is_admin, active, must_change, created_at, last_login"
@@ -635,3 +654,68 @@ def delete_session(token_hash: str) -> None:
 def delete_user_sessions(user_id: int, keep: str | None = None) -> None:
     with connect() as conn:
         conn.execute("DELETE FROM sessions WHERE user_id = ? AND token_hash != ?", (user_id, keep or ""))
+
+# --------------------------------------------------------------------------- chat entre utilisateurs
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+MESSAGE_COLUMNS = "id, document_id, user_id, author, content, created_at"
+
+
+def add_message(document_id: int | None, user_id: int, author: str, content: str) -> dict[str, Any]:
+    with connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO messages(document_id, user_id, author, content, created_at) VALUES(?,?,?,?,?)",
+            (document_id, user_id, author, content, utc_now()),
+        )
+        row = conn.execute(f"SELECT {MESSAGE_COLUMNS} FROM messages WHERE id = ?", (cur.lastrowid,)).fetchone()
+    return dict(row)
+
+
+def list_messages(document_id: int | None, before: int | None = None, limit: int = 60) -> list[dict[str, Any]]:
+    """Derniers messages d'un fil (le plus ancien en premier) ; `before` pour remonter dans l'historique."""
+    where = "document_id IS NULL" if document_id is None else "document_id = ?"
+    args: list[Any] = [] if document_id is None else [document_id]
+    if before:
+        where += " AND id < ?"
+        args.append(before)
+    with connect() as conn:
+        rows = conn.execute(
+            f"SELECT {MESSAGE_COLUMNS} FROM messages WHERE {where} ORDER BY id DESC LIMIT ?", (*args, limit)
+        ).fetchall()
+    return [dict(r) for r in reversed(rows)]
+
+
+def get_message(message_id: int) -> dict[str, Any] | None:
+    with connect() as conn:
+        row = conn.execute(f"SELECT {MESSAGE_COLUMNS} FROM messages WHERE id = ?", (message_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def delete_message(message_id: int) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM messages WHERE id = ?", (message_id,))
+
+
+def mark_read(user_id: int, channel: int, last_id: int) -> None:
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO chat_reads(user_id, channel, last_id) VALUES(?,?,?) "
+            "ON CONFLICT(user_id, channel) DO UPDATE SET last_id = max(last_id, excluded.last_id)",
+            (user_id, channel, last_id),
+        )
+
+
+def unread_counts(user_id: int) -> dict[int, int]:
+    """Messages non lus des autres, par fil (0 = général, sinon id du document)."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT COALESCE(m.document_id, 0) AS channel, COUNT(*) AS n FROM messages m "
+            "LEFT JOIN chat_reads r ON r.user_id = ? AND r.channel = COALESCE(m.document_id, 0) "
+            "WHERE m.id > COALESCE(r.last_id, 0) AND (m.user_id IS NULL OR m.user_id <> ?) "
+            "GROUP BY COALESCE(m.document_id, 0)",
+            (user_id, user_id),
+        ).fetchall()
+    return {r["channel"]: r["n"] for r in rows}

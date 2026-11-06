@@ -381,6 +381,87 @@ textarea { resize: vertical; }
 .rcaret.below span { bottom: auto; top: 100%; border-radius: 0 4px 4px 4px; }
 .rcaret.idle span { opacity: 0; }
 
+/* ------------------------------------------------------------------ droits */
+.not-admin .admin-only { display: none !important; } /* suppressions : administrateurs seulement */
+
+/* ------------------------------------------------------------------ chat entre utilisateurs */
+.social-row { display: flex; gap: 6px; }
+.social-row .online-row { flex: 1; min-width: 0; }
+.talk-pill {
+  display: flex; align-items: center; justify-content: center; gap: 6px; flex: none; min-height: 34px; padding: 4px 10px;
+  border: 1px solid var(--border); background: var(--panel-2); border-radius: 9px; cursor: pointer;
+  color: var(--text); font-size: 12.5px; font-weight: 600; white-space: nowrap;
+}
+.social-row .online-row[hidden] + .talk-pill { flex: 1; }
+.talk-pill:hover { border-color: var(--accent); }
+.badge-count {
+  min-width: 17px; padding: 0 5px; border-radius: 999px; background: var(--danger); color: #fff;
+  font-size: 10.5px; font-weight: 700; line-height: 17px; text-align: center;
+}
+.chat-btn { position: relative; }
+.chat-btn .badge-count { position: absolute; top: -4px; right: -4px; }
+.doc-item .name { flex: 0 1 auto; min-width: 0; margin-right: auto; } /* les pastilles se rangent à droite */
+.doc-item .multi { order: 1; margin-left: 4px; }
+.doc-item .here { order: 2; margin-left: 4px; }
+.doc-item .talk-n {
+  order: 3; flex: none; margin-left: 4px; padding: 0 6px; border-radius: 999px; background: var(--danger); color: #fff;
+  font-size: 10.5px; font-weight: 700; line-height: 17px;
+}
+
+.talk-panel {
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 80; width: min(380px, 100vw);
+  display: flex; flex-direction: column; background: var(--panel);
+  border-left: 1px solid var(--border); box-shadow: -10px 0 30px rgba(16, 24, 40, .18);
+}
+.talk-head { display: flex; align-items: center; gap: 8px; padding: 10px 10px 8px 14px; border-bottom: 1px solid var(--border); }
+.talk-head > b { white-space: nowrap; }
+.talk-head .seg button { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.talk-sub {
+  display: flex; align-items: center; gap: 8px; padding: 6px 14px; font-size: 12px; color: var(--muted);
+  border-bottom: 1px solid var(--border); min-height: 36px;
+}
+.talk-sub .txt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.talk-sub b { color: var(--text); }
+.talk-messages { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 8px 12px 12px; display: flex; flex-direction: column; }
+.talk-empty { margin: auto; padding: 20px; color: var(--muted); font-size: 13px; text-align: center; line-height: 1.6; }
+.talk-more { align-self: center; margin: 4px 0; font-size: 12px; }
+.talk-day {
+  align-self: center; margin: 12px 0 2px; font-size: 11px; font-weight: 700; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .04em;
+}
+.talk-msg { display: flex; align-items: flex-end; gap: 7px; margin-top: 10px; }
+.talk-msg.grouped { margin-top: 3px; padding-left: 31px; }
+.talk-msg.mine { justify-content: flex-end; padding-left: 0; }
+.talk-msg .body { min-width: 0; max-width: 84%; }
+.talk-msg .meta { display: flex; align-items: baseline; gap: 6px; margin: 0 4px 2px; font-size: 11.5px; color: var(--muted); }
+.talk-msg.mine .meta { justify-content: flex-end; }
+.talk-msg .text {
+  padding: 7px 11px; border-radius: 14px 14px 14px 4px; background: var(--panel-2);
+  font-size: 13.5px; line-height: 1.45; overflow-wrap: anywhere;
+}
+.talk-msg.mine .text { border-radius: 14px 14px 4px 14px; background: var(--accent); color: var(--accent-text); }
+.talk-msg.mine .text a { color: inherit; }
+.talk-msg .del { align-self: center; padding: 2px 4px; border: none; background: none; cursor: pointer; font-size: 12px; opacity: 0; }
+.talk-msg:hover .del { opacity: .7; }
+.talk-msg.mine .del { order: -1; }
+.talk-typing { padding: 0 14px 4px; font-size: 12px; font-weight: 600; color: var(--accent); }
+.talk-form {
+  display: flex; align-items: flex-end; gap: 8px; padding: 10px;
+  padding-bottom: max(10px, env(safe-area-inset-bottom)); border-top: 1px solid var(--border);
+}
+.talk-form textarea { flex: 1; min-height: 38px; max-height: 140px; resize: none; }
+@media (max-width: 760px) {
+  .talk-panel { width: 100%; border-left: none; padding-top: env(safe-area-inset-top); }
+  .talk-head .icon-btn { width: 40px; height: 40px; font-size: 18px; }
+}
+@media (max-width: 420px) {
+  .mobile-bar .m-brand b { display: none; } /* place pour le bouton 💬 */
+  .talk-head > b { display: none; } /* les onglets suffisent */
+}
+@media (pointer: coarse) {
+  .talk-msg .del { opacity: .6; }
+}
+
 /* ------------------------------------------------------------------ connexion & comptes */
 .login-screen {
   position: fixed; inset: 0; z-index: 300; display: grid; place-items: center; padding: 16px;

@@ -420,7 +420,7 @@ def update_subject(subject_id: int, body: SubjectIn) -> dict[str, Any]:
 
 
 @app.delete("/api/subjects/{subject_id}")
-def delete_subject(subject_id: int) -> dict[str, bool]:
+def delete_subject(subject_id: int, _: dict = Depends(require_admin)) -> dict[str, bool]:
     subject = next((s for s in db.list_subjects() if s["id"] == subject_id), None)
     db.delete_subject(subject_id)
     if subject:
@@ -490,7 +490,7 @@ def update_document(doc_id: int, body: DocumentIn) -> dict[str, Any]:
 
 
 @app.delete("/api/documents/{doc_id}")
-def delete_document(doc_id: int) -> dict[str, bool]:
+def delete_document(doc_id: int, _: dict = Depends(require_admin)) -> dict[str, bool]:
     doc = db.get_document(doc_id)
     source = db.delete_document(doc_id)
     if source:
@@ -1347,7 +1347,8 @@ async def translate_document(doc_id: int) -> StreamingResponse:
 
 
 @app.post("/api/documents/{doc_id}/untranslate")
-def untranslate_document(doc_id: int) -> dict[str, Any]:
+def untranslate_document(doc_id: int, _: dict = Depends(require_admin)) -> dict[str, Any]:
+    """Revenir à l'anglais efface la traduction et ses retouches : réservé aux administrateurs."""
     doc = _get_doc_or_404(doc_id)
     data = doc.get("data") if isinstance(doc.get("data"), dict) else {}
     tr = data.pop("translation", None)
@@ -1356,6 +1357,67 @@ def untranslate_document(doc_id: int) -> dict[str, Any]:
     updated = _set_content(doc_id, tr["original_content"], title=tr["original_title"], data=data or None)
     live.notify("docs", doc=doc_id, fields=["title", "data"])
     return _listing(updated or doc)
+
+
+# =========================================================================== chat entre utilisateurs
+
+class MessageIn(BaseModel):
+    document_id: int | None = None  # None = fil général
+    content: str = Field(..., max_length=4000)
+
+
+def _author(request: Request) -> dict[str, Any]:
+    return getattr(request.state, "user", None) or auth.LOCAL_USER
+
+
+def _public_message(m: dict[str, Any]) -> dict[str, Any]:
+    return m | {"color": live.color_for(int(m["user_id"] or 0))}
+
+
+@app.get("/api/messages")
+def chat_messages(document_id: int | None = None, before: int | None = None, limit: int = 60) -> list[dict[str, Any]]:
+    return [_public_message(m) for m in db.list_messages(document_id, before, max(1, min(limit, 200)))]
+
+
+@app.post("/api/messages")
+def post_message(body: MessageIn, request: Request) -> dict[str, Any]:
+    content = body.content.strip()
+    if not content:
+        raise HTTPException(400, "Le message est vide.")
+    if body.document_id is not None and not db.get_document(body.document_id):
+        raise HTTPException(404, "Document introuvable.")
+    user = _author(request)
+    message = _public_message(db.add_message(body.document_id, int(user["id"]), user["username"], content))
+    db.mark_read(int(user["id"]), body.document_id or 0, message["id"])
+    live.chat_message(message)
+    return message
+
+
+@app.delete("/api/messages/{message_id}")
+def delete_message(message_id: int, _: dict = Depends(require_admin)) -> dict[str, bool]:
+    message = db.get_message(message_id)
+    if not message:
+        raise HTTPException(404, "Message introuvable.")
+    db.delete_message(message_id)
+    live.chat_deleted(message)
+    return {"ok": True}
+
+
+@app.get("/api/messages/unread")
+def unread_messages(request: Request) -> dict[str, Any]:
+    counts = db.unread_counts(int(_author(request)["id"]))
+    return {"general": counts.pop(0, 0), "docs": counts}
+
+
+class ReadIn(BaseModel):
+    channel: int = Field(..., ge=0)  # 0 = fil général, sinon id du document
+    last_id: int = Field(..., ge=0)
+
+
+@app.post("/api/messages/read")
+def read_messages(body: ReadIn, request: Request) -> dict[str, bool]:
+    db.mark_read(int(_author(request)["id"]), body.channel, body.last_id)
+    return {"ok": True}
 
 
 # =========================================================================== flashcards
@@ -1399,7 +1461,7 @@ def update_card(card_id: int, body: CardIn) -> dict[str, Any]:
 
 
 @app.delete("/api/cards/{card_id}")
-def delete_card(card_id: int) -> dict[str, bool]:
+def delete_card(card_id: int, _: dict = Depends(require_admin)) -> dict[str, bool]:
     card = db.get_card(card_id)
     if card:
         db.delete_card(card_id)
@@ -1494,7 +1556,7 @@ def update_event(event_id: int, body: EventIn) -> dict[str, Any]:
 
 
 @app.delete("/api/events/{event_id}")
-def delete_event(event_id: int) -> dict[str, bool]:
+def delete_event(event_id: int, _: dict = Depends(require_admin)) -> dict[str, bool]:
     event = db.get_event(event_id)
     db.delete_event(event_id)
     if event:

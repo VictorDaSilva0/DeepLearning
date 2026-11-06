@@ -9,12 +9,12 @@
   <meta name="apple-mobile-web-app-title" content="Révision">
   <title>DeepLearning — atelier de révision</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧠</text></svg>">
-  <link rel="stylesheet" href="/static/style.css?v=15">
+  <link rel="stylesheet" href="/static/style.css?v=16">
   <!-- KaTeX (formules) : optionnel, chargé depuis un CDN quand Internet est disponible. -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
-  <script defer src="/static/app.js?v=15"></script>
+  <script defer src="/static/app.js?v=16"></script>
 </head>
 <body>
 <div id="app" class="layout">
@@ -26,8 +26,11 @@
       <span><b>DeepLearning</b><small>atelier de révision</small></span>
     </a>
 
-    <!-- Qui est connecté (temps réel) -->
-    <button id="online" class="online-row" title="Qui est en ligne ?" hidden></button>
+    <!-- Qui est connecté (temps réel) + chat -->
+    <div class="social-row">
+      <button id="online" class="online-row" title="Qui est en ligne ?" hidden></button>
+      <button id="btn-talk" class="talk-pill" title="Chat : discussion générale et par document">💬 Chat<b class="badge-count" hidden></b></button>
+    </div>
 
     <div class="side-actions">
       <button id="btn-import" class="btn primary">⬆ Importer</button>
@@ -74,6 +77,7 @@
       <a href="#" class="m-brand"><span class="brand-logo">🧠</span><b>Révision</b></a>
       <span class="spacer"></span>
       <button id="m-online" class="avatar-stack m-online" title="Qui est en ligne ?" aria-label="Personnes en ligne" hidden></button>
+      <button id="m-talk" class="icon-btn chat-btn" title="Chat" aria-label="Chat">💬<b class="badge-count" hidden></b></button>
       <button id="m-calendar" class="icon-btn" title="Examens" aria-label="Calendrier des examens">📅</button>
       <button id="m-review" class="icon-btn m-review" title="Réviser" aria-label="Réviser les flashcards">🃏<b id="m-due" hidden></b></button>
       <button id="m-ai" class="btn small accent" title="Assistant IA">✨ IA</button>
@@ -160,7 +164,8 @@
             <button data-export="copy">Copier le texte</button>
           </div>
         </div>
-        <button id="btn-delete" class="icon-btn danger" title="Supprimer le document">🗑</button>
+        <button id="btn-chat-doc" class="icon-btn chat-btn" title="Discuter de ce document avec les autres">💬<b class="badge-count" hidden></b></button>
+        <button id="btn-delete" class="icon-btn danger admin-only" title="Supprimer le document">🗑</button>
         <button id="btn-toggle-ai" class="btn small accent" title="Afficher / masquer l'assistant IA">✨ IA</button>
       </header>
 
@@ -226,7 +231,7 @@
         <footer class="statusbar">
           <span id="doc-stats"></span>
           <span id="doc-source" class="muted"></span>
-          <span id="doc-translated" class="muted" hidden>🌐 Traduit de l'anglais par l'IA · <button class="link" id="btn-untranslate">revenir à l'anglais</button></span>
+          <span id="doc-translated" class="muted" hidden>🌐 Traduit de l'anglais par l'IA<span class="admin-only"> · <button class="link" id="btn-untranslate">revenir à l'anglais</button></span></span>
           <span class="spacer"></span>
           <span id="doc-typing" class="typing-note" hidden></span>
           <span id="save-state" class="muted"></span>
@@ -402,6 +407,26 @@
 <!-- ============================================================ Fenêtres -->
 <input type="file" id="file-input" multiple accept=".pdf,.docx,.doc,.pptx,.ppt,.txt,.md,.markdown" hidden>
 <div id="drop-overlay" class="drop-overlay" hidden><div>📥 Dépose tes cours pour les importer</div></div>
+
+<!-- ============================================================ Chat entre utilisateurs -->
+<aside id="talk-panel" class="talk-panel" hidden aria-label="Chat">
+  <header class="talk-head">
+    <b>💬 Chat</b>
+    <div class="seg small" id="talk-tabs" role="tablist">
+      <button data-ch="doc" title="Discussion sur le document ouvert">📄 Ce document<b class="badge-count" hidden></b></button>
+      <button data-ch="general" title="Discussion générale">🌐 Général<b class="badge-count" hidden></b></button>
+    </div>
+    <span class="spacer"></span>
+    <button id="talk-close" class="icon-btn" title="Fermer (Échap)">✕</button>
+  </header>
+  <div id="talk-sub" class="talk-sub"></div>
+  <div id="talk-messages" class="talk-messages"></div>
+  <div id="talk-typing" class="talk-typing" hidden></div>
+  <form id="talk-form" class="talk-form">
+    <textarea id="talk-text" rows="1" maxlength="4000" placeholder="Écrire un message… (Entrée pour envoyer)"></textarea>
+    <button type="submit" class="btn primary small" id="talk-send">Envoyer</button>
+  </form>
+</aside>
 
 <dialog id="dlg-import" class="dialog">
   <form method="dialog">
