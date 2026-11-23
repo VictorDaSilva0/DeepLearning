@@ -108,10 +108,10 @@ EXPORT_TEMPLATE = """<!doctype html>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"
   onload="renderMathInElement(document.body,{{delimiters:[{{left:'\\\\[',right:'\\\\]',display:true}},{{left:'\\\\(',right:'\\\\)',display:false}}]}})"></script>
 <style>
-  body {{ font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; color: #1f2937; max-width: 820px;
+  body {{ font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; color: #262020; max-width: 820px;
          margin: 40px auto; padding: 0 24px; }}
-  h1, h2, h3, h4 {{ line-height: 1.25; color: #111827; }}
-  h1 {{ border-bottom: 3px solid #6366f1; padding-bottom: .3em; }}
+  h1, h2, h3, h4 {{ line-height: 1.25; color: #262020; }}
+  h1 {{ border-bottom: 3px solid #d9352c; padding-bottom: .3em; }}
   h2 {{ border-bottom: 1px solid #e5e7eb; padding-bottom: .2em; margin-top: 1.6em; }}
   table {{ border-collapse: collapse; width: 100%; margin: 1em 0; }}
   th, td {{ border: 1px solid #d1d5db; padding: 6px 10px; text-align: left; vertical-align: top; }}
@@ -119,7 +119,7 @@ EXPORT_TEMPLATE = """<!doctype html>
   code {{ background: #f3f4f6; padding: .1em .35em; border-radius: 4px; font-size: .92em; }}
   pre {{ background: #f3f4f6; padding: 12px; border-radius: 8px; overflow-x: auto; }}
   pre code {{ background: none; padding: 0; }}
-  blockquote {{ margin: 1em 0; padding: .5em 1em; border-left: 4px solid #6366f1; background: #eef2ff; }}
+  blockquote {{ margin: 1em 0; padding: .5em 1em; border-left: 4px solid #d9352c; background: #fbeae8; }}
   mark {{ background: #fef08a; }}
   img {{ max-width: 100%; height: auto; border-radius: 6px; }}
   @media print {{ img {{ break-inside: avoid; }} }}

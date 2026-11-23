@@ -16,6 +16,7 @@ from . import config
 IMG_DIR = config.DATA_DIR / "images"
 MAX_MB = 20
 MAX_SIDE = 2000  # px : largement assez pour un écran, et léger à charger sur téléphone
+MAX_PIXELS = 50_000_000  # au-delà, un petit PNG peut coûter plus d'1 Go de mémoire au décodage
 NAME_RE = re.compile(r"^[a-f0-9]{24}\.(png|jpg|gif)$")
 MEDIA_TYPES = {"png": "image/png", "jpg": "image/jpeg", "gif": "image/gif"}
 _FORMATS = {"PNG", "JPEG", "MPO", "GIF", "WEBP", "BMP"}  # pas de SVG : il peut contenir du script
@@ -34,14 +35,16 @@ def save(data: bytes) -> dict[str, Any]:
         raise ValueError("Ce fichier n'est pas une image lisible (PNG, JPEG, GIF ou WebP).") from exc
     if fmt not in _FORMATS:
         raise ValueError(f"Format d'image non pris en charge ({fmt}) : utilise PNG, JPEG, GIF ou WebP.")
+    if img.width * img.height > MAX_PIXELS:
+        raise ValueError(f"Image trop grande ({img.width}×{img.height} px) : 50 mégapixels au maximum.")
 
     img_id = secrets.token_hex(12)
     if fmt == "GIF" and len(data) <= 8 * 1024 * 1024:
         ext, out = "gif", data  # gardé tel quel (animations)
         width, height = img.size
     else:
+        img.thumbnail((MAX_SIDE, MAX_SIDE))  # avant de redresser : un JPEG se décode alors directement en petit
         img = ImageOps.exif_transpose(img)  # photo prise en portrait : remise à l'endroit
-        img.thumbnail((MAX_SIDE, MAX_SIDE))
         width, height = img.size
         buf = io.BytesIO()
         transparent = img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info)

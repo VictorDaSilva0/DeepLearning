@@ -1,25 +1,27 @@
 /* ======================================================================= thème */
+/* Charte UniLaSalle Amiens : rouge du logo (#d9352c) et anthracite chaud (#262020).
+   L'accent est un rouge à peine plus profond (#c8302a) pour rester lisible (≥ 4,5:1) en texte, même sur --accent-soft. */
 :root {
-  --bg: #f5f6fa;
+  --bg: #f6f4f3;
   --panel: #ffffff;
-  --panel-2: #f0f2f8;
-  --panel-3: #e8ebf4;
-  --border: #e1e4ee;
-  --text: #1d2433;
-  --muted: #6b7385;
-  --accent: #5b5bd6;
-  --accent-2: #8b5cf6;
-  --accent-soft: #ecebff;
+  --panel-2: #f3efee;
+  --panel-3: #e9e3e2;
+  --border: #e5dfde;
+  --text: #262020;
+  --muted: #6e6463;
+  --accent: #c8302a;
+  --accent-2: #9e2520;
+  --accent-soft: #fbeae8;
   --accent-text: #ffffff;
   --success: #15803d;
   --success-soft: #dcfce7;
-  --danger: #dc2626;
-  --danger-soft: #fee2e2;
+  --danger: #b42318;
+  --danger-soft: #fde4e1;
   --warning: #b45309;
   --warning-soft: #fef3c7;
   --mark: #fef08a;
-  --code-bg: #f1f3f8;
-  --shadow: 0 1px 2px rgba(16, 24, 40, .05), 0 6px 20px rgba(16, 24, 40, .07);
+  --code-bg: #f4f0ef;
+  --shadow: 0 1px 2px rgba(38, 32, 32, .05), 0 6px 20px rgba(38, 32, 32, .08);
   --radius: 10px;
   --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
   --mono: "Cascadia Code", "JetBrains Mono", Consolas, "SFMono-Regular", monospace;
@@ -28,17 +30,17 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #0e1016;
-    --panel: #161922;
-    --panel-2: #1c202b;
-    --panel-3: #252a38;
-    --border: #2a3040;
-    --text: #e5e8f0;
-    --muted: #9099ad;
-    --accent: #8b8cf6;
-    --accent-2: #a78bfa;
-    --accent-soft: #24264a;
-    --accent-text: #0e1016;
+    --bg: #121010;
+    --panel: #1a1616;
+    --panel-2: #221d1d;
+    --panel-3: #2c2626;
+    --border: #352e2e;
+    --text: #eee8e7;
+    --muted: #a69b9a;
+    --accent: #f05a4f;
+    --accent-2: #d9352c;
+    --accent-soft: #3b1b19;
+    --accent-text: #170b0a;
     --success: #4ade80;
     --success-soft: #11301f;
     --danger: #f87171;
@@ -46,7 +48,7 @@
     --warning: #fbbf24;
     --warning-soft: #3a2c0c;
     --mark: #6b5b12;
-    --code-bg: #1f2431;
+    --code-bg: #221c1c;
     --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 8px 24px rgba(0, 0, 0, .35);
     color-scheme: dark;
   }
@@ -118,7 +120,7 @@ a { color: var(--accent); }
   }
   .layout.nav-open #sidebar { transform: none; }
   .drawer-backdrop {
-    display: block; position: fixed; inset: 0; z-index: 55; background: rgba(10, 12, 20, .45);
+    display: block; position: fixed; inset: 0; z-index: 55; background: rgba(20, 16, 16, .45);
     opacity: 0; pointer-events: none; transition: opacity .2s;
   }
   .layout.nav-open .drawer-backdrop { opacity: 1; pointer-events: auto; }
@@ -136,7 +138,7 @@ a { color: var(--accent); }
   .m-review { position: relative; }
   .m-review b {
     position: absolute; top: 2px; right: 0; min-width: 17px; height: 17px; padding: 0 4px; border-radius: 999px;
-    background: var(--danger); color: #fff; font-size: 10.5px; line-height: 17px; text-align: center;
+    background: var(--danger); color: var(--bg); font-size: 10.5px; line-height: 17px; text-align: center;
   }
   .layout.focus .mobile-bar { display: none; }
   .only-desktop { display: none; }
@@ -337,7 +339,7 @@ textarea { resize: vertical; }
 .account-chip .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 .avatar {
   width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; flex: none; font-size: 12px;
-  font-weight: 700; color: #fff; background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  font-weight: 700; color: var(--accent-text); background: linear-gradient(135deg, var(--accent), var(--accent-2));
 }
 
 /* ------------------------------------------------------------------ temps réel : présence, curseurs */
@@ -395,7 +397,7 @@ textarea { resize: vertical; }
 .social-row .online-row[hidden] + .talk-pill { flex: 1; }
 .talk-pill:hover { border-color: var(--accent); }
 .badge-count {
-  min-width: 17px; padding: 0 5px; border-radius: 999px; background: var(--danger); color: #fff;
+  min-width: 17px; padding: 0 5px; border-radius: 999px; background: var(--danger); color: var(--bg);
   font-size: 10.5px; font-weight: 700; line-height: 17px; text-align: center;
 }
 .chat-btn { position: relative; }
@@ -404,14 +406,14 @@ textarea { resize: vertical; }
 .doc-item .multi { order: 1; margin-left: 4px; }
 .doc-item .here { order: 2; margin-left: 4px; }
 .doc-item .talk-n {
-  order: 3; flex: none; margin-left: 4px; padding: 0 6px; border-radius: 999px; background: var(--danger); color: #fff;
+  order: 3; flex: none; margin-left: 4px; padding: 0 6px; border-radius: 999px; background: var(--danger); color: var(--bg);
   font-size: 10.5px; font-weight: 700; line-height: 17px;
 }
 
 .talk-panel {
   position: fixed; top: 0; right: 0; bottom: 0; z-index: 80; width: min(380px, 100vw);
   display: flex; flex-direction: column; background: var(--panel);
-  border-left: 1px solid var(--border); box-shadow: -10px 0 30px rgba(16, 24, 40, .18);
+  border-left: 1px solid var(--border); box-shadow: -10px 0 30px rgba(38, 32, 32, .18);
 }
 .talk-head { display: flex; align-items: center; gap: 8px; padding: 10px 10px 8px 14px; border-bottom: 1px solid var(--border); }
 .talk-head > b { white-space: nowrap; }
@@ -449,7 +451,7 @@ textarea { resize: vertical; }
   display: flex; align-items: flex-end; gap: 8px; padding: 10px;
   padding-bottom: max(10px, env(safe-area-inset-bottom)); border-top: 1px solid var(--border);
 }
-.talk-form textarea { flex: 1; min-height: 38px; max-height: 140px; resize: none; }
+.talk-form textarea { flex: 1; min-height: 38px; max-height: 140px; resize: none; field-sizing: content; }
 @media (max-width: 760px) {
   .talk-panel { width: 100%; border-left: none; padding-top: env(safe-area-inset-top); }
   .talk-head .icon-btn { width: 40px; height: 40px; font-size: 18px; }
@@ -517,6 +519,22 @@ textarea { resize: vertical; }
 .menu button:hover { background: var(--panel-2); }
 .menu button.danger { color: var(--danger); }
 .floating-menu { position: fixed; }
+/* Les menus apparaissent en fondu (et glissent un peu si les animations ne sont pas réduites). */
+.menu { transition: opacity .12s ease-out, translate .12s ease-out; }
+@starting-style { .menu { opacity: 0; } }
+@media (prefers-reduced-motion: no-preference) { @starting-style { .menu { translate: 0 -4px; } } }
+
+/* Changement de vue (accueil, document, calendrier…) : court fondu, sans mouvement. */
+.view:not([hidden]) { animation: view-in .14s ease-out; }
+@keyframes view-in { from { opacity: 0; } }
+
+/* Titres courts : lignes équilibrées plutôt qu'un mot seul sur la dernière ligne. */
+h1, h2, h3, .markdown h4 { text-wrap: balance; }
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
+  clip-path: inset(50%); white-space: nowrap; border: 0;
+}
 
 /* ======================================================================= accueil */
 .home { overflow: auto; }
@@ -570,6 +588,13 @@ textarea { resize: vertical; }
 }
 #doc-subject { max-width: 170px; }
 .doc-header .spacer { flex: 0 1 0; }
+/* Texte à côté des icônes (Écrire, Lire, Exporter…) dès que l'en-tête a la place : moins de devinettes. */
+.doc-header { container-type: inline-size; }
+.doc-header .lbl { display: none; }
+@container (min-width: 1000px) {
+  .doc-header .lbl { display: inline; margin-left: 5px; font-size: 12.5px; }
+  .doc-header .icon-btn:has(.lbl) { width: auto; padding: 0 9px; display: inline-flex; align-items: center; }
+}
 .doc-title:hover { background: var(--panel-2) !important; }
 .doc-title:focus { background: var(--panel) !important; border-color: var(--accent) !important; }
 .doc-tabs { background: var(--panel); }
@@ -890,7 +915,29 @@ textarea { resize: vertical; }
   border: 1px solid var(--border); border-radius: 14px; padding: 0; background: var(--panel); color: var(--text);
   width: min(560px, 94vw); box-shadow: var(--shadow);
 }
-.dialog::backdrop { background: rgba(10, 12, 20, .45); backdrop-filter: blur(2px); }
+/* Ouverture / fermeture en douceur. Firefox et Safari ne savent pas encore animer la fermeture : elle y est instantanée. */
+.dialog {
+  opacity: 0;
+  transition-property: opacity, transform, display, overlay;
+  transition-duration: .18s;
+  transition-timing-function: ease-out;
+  transition-behavior: allow-discrete;
+}
+.dialog[open] { opacity: 1; }
+@starting-style { .dialog[open] { opacity: 0; } }
+@media (prefers-reduced-motion: no-preference) {
+  .dialog { transform: scale(.97); }
+  .dialog[open] { transform: none; } /* « none » au repos : sinon les menus position: fixed d'une fenêtre seraient décalés */
+  @starting-style { .dialog[open] { transform: scale(.97); } }
+}
+.dialog::backdrop {
+  background: transparent; backdrop-filter: blur(2px);
+  transition-property: background-color, display, overlay;
+  transition-duration: .18s;
+  transition-behavior: allow-discrete;
+}
+.dialog[open]::backdrop { background: rgba(20, 16, 16, .45); }
+@starting-style { .dialog[open]::backdrop { background: transparent; } }
 .dialog form { padding: 20px 22px; display: flex; flex-direction: column; gap: 14px; }
 .dialog h3 { margin: 0; font-size: 17px; }
 .dialog footer { display: flex; align-items: center; gap: 8px; }
@@ -905,16 +952,17 @@ textarea { resize: vertical; }
 
 .drop-overlay {
   position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; pointer-events: none;
-  background: rgba(91, 91, 214, .12); border: 4px dashed var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent); border: 4px dashed var(--accent);
 }
 .drop-overlay div { background: var(--panel); padding: 18px 28px; border-radius: 14px; box-shadow: var(--shadow); font-size: 18px; font-weight: 600; }
 
 .toasts { position: fixed; right: 16px; bottom: 16px; z-index: 200; display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
 .toast {
   background: var(--text); color: var(--bg); padding: 10px 14px; border-radius: 10px; box-shadow: var(--shadow);
-  font-size: 13.5px; max-width: 420px; display: flex; gap: 10px; align-items: center; animation: pop .2s ease-out;
+  font-size: 13.5px; max-width: 420px; display: flex; gap: 10px; align-items: center;
 }
-.toast.error { background: var(--danger); color: white; }
+@media (prefers-reduced-motion: no-preference) { .toast { animation: pop .2s ease-out; } }
+.toast.error { background: var(--danger); color: var(--bg); } /* texte blanc illisible sur le rouge clair du mode sombre */
 .toast button { border: none; background: rgba(255,255,255,.18); color: inherit; border-radius: 6px; padding: 3px 8px; cursor: pointer; font-weight: 600; }
 @keyframes pop { from { transform: translateY(8px); opacity: 0; } }
 

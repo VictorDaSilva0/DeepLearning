@@ -3,18 +3,22 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
-  <meta name="theme-color" content="#5b5bd6">
+  <meta name="theme-color" content="#d9352c">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="Révision">
   <title>DeepLearning — atelier de révision</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧠</text></svg>">
-  <link rel="stylesheet" href="/static/style.css?v=18">
-  <!-- KaTeX (formules) : optionnel, chargé depuis un CDN quand Internet est disponible. -->
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
-  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
-  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
-  <script defer src="/static/app.js?v=18"></script>
+  <link rel="stylesheet" href="/static/style.css?v=20">
+  <!-- KaTeX (formules) : optionnel, chargé depuis un CDN quand Internet est disponible.
+       integrity = empreintes officielles de KaTeX 0.16.11 : un fichier modifié sur le CDN est refusé. -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css"
+    integrity="sha384-nB0miv6/jRmo5UMMR1wu3Gz6NLsoTkbqJghGIsx//Rlm+ZU03BU6SQNC66uf4l5+" crossorigin="anonymous" referrerpolicy="no-referrer">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"
+    integrity="sha384-7zkQWkzuo3B5mTepMUcHkMB5jZaolc2xDwL6VFqjFALcbeS9Ggm/Yr2r3Dy4lfFg" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"
+    integrity="sha384-43gviWU0YVjaDtb/GhzOouOXtZMP/7XUzwPTstBeZFe/+rCMvRwr4yROQP43s0Xk" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+  <script defer src="/static/app.js?v=20"></script>
 </head>
 <body>
 <div id="app" class="layout">
@@ -144,20 +148,21 @@
         <div class="spacer"></div>
         <div id="doc-people" class="avatar-stack" hidden></div>
         <div id="mode-switch" class="seg" role="group" aria-label="Affichage">
-          <button data-mode="edit" title="Éditeur seul">✎</button>
-          <button data-mode="split" title="Éditeur + aperçu">◫</button>
-          <button data-mode="preview" title="Aperçu seul">👁</button>
+          <!-- .lbl : texte affiché à côté de l'icône quand l'en-tête a la place (sinon l'infobulle suffit) -->
+          <button data-mode="edit" title="Éditeur seul">✎<span class="lbl">Écrire</span></button>
+          <button data-mode="split" title="Éditeur + aperçu">◫<span class="lbl">Les deux</span></button>
+          <button data-mode="preview" title="Aperçu seul">👁<span class="lbl">Lire</span></button>
         </div>
-        <button id="btn-source" class="icon-btn" title="Ouvrir le fichier d'origine (PDF, Word, PowerPoint)">📄</button>
+        <button id="btn-source" class="icon-btn" title="Ouvrir le fichier d'origine (PDF, Word, PowerPoint)">📄<span class="lbl">Original</span></button>
         <div class="menu-wrap">
-          <button id="btn-export" class="icon-btn" title="Exporter / imprimer">⤓</button>
+          <button id="btn-export" class="icon-btn" title="Exporter / imprimer">⤓<span class="lbl">Exporter</span></button>
           <div id="menu-export" class="menu" hidden>
             <button data-export="md">Markdown (.md)</button>
             <button data-export="html">Page imprimable / PDF</button>
             <button data-export="copy">Copier le texte</button>
           </div>
         </div>
-        <button id="btn-chat-doc" class="icon-btn chat-btn" title="Discuter de ce document avec les autres">💬<b class="badge-count" hidden></b></button>
+        <button id="btn-chat-doc" class="icon-btn chat-btn" title="Discuter de ce document avec les autres">💬<span class="lbl">Chat</span><b class="badge-count" hidden></b></button>
         <button id="btn-delete" class="icon-btn danger admin-only" title="Supprimer le document">🗑</button>
         <button id="btn-toggle-ai" class="btn small accent" title="Afficher / masquer l'assistant IA">✨ IA</button>
       </header>
@@ -606,6 +611,8 @@
   </form>
 </div>
 
-<div id="toasts" class="toasts"></div>
+<div id="toasts" class="toasts" role="region" aria-label="Notifications"></div>
+<!-- Lecteurs d'écran sans ariaNotify() : les notifications sont lues depuis cette zone -->
+<div id="announcer" class="sr-only" aria-live="polite"></div>
 </body>
 </html>

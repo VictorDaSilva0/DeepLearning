@@ -74,8 +74,14 @@ function toast(message, opts = {}) {
     el.append(b);
   }
   $('#toasts').append(el);
+  // Lu par les lecteurs d'écran : ariaNotify() quand il existe, sinon une zone aria-live.
+  if (document.ariaNotify) document.ariaNotify(message);
+  else $('#announcer').textContent = message;
   setTimeout(() => el.remove(), opts.duration || (opts.error ? 7000 : 4500));
 }
+
+/** Entrée qui valide un mot en cours de saisie (clavier de téléphone, IME ; 229 = Safari) : ne doit rien envoyer. */
+const composing = (e) => e.isComposing || e.keyCode === 229;
 
 async function errorMessage(res) {
   let msg = `Erreur ${res.status}`;
@@ -424,7 +430,7 @@ function updateNextExamBadge() {
 function renderLibrary() {
   const nav = $('#library');
   const scroll = nav.scrollTop;
-  nav.innerHTML = '';
+  nav.replaceChildren();
   if (!state.docs.length && !state.subjects.length) {
     nav.innerHTML = '<div class="empty">Ta bibliothèque est vide.<br>Crée une matière ou importe un cours ⬆</div>';
     return;
@@ -644,7 +650,9 @@ function openSubjectDialog(subject = null, defaults = {}) {
   renderSwatches();
   $('#dlg-subject').showModal();
   setTimeout(() => $('#subj-name').focus(), 30);
-  return new Promise((resolve) => (subjectDlg.resolve = resolve));
+  const { promise, resolve } = Promise.withResolvers();
+  subjectDlg.resolve = resolve;
+  return promise;
 }
 
 function renderSwatches() {
@@ -1932,7 +1940,7 @@ function drawCarets() {
 function drawCaretsNow() {
   caretFrame = 0;
   const layer = $('#carets');
-  layer.innerHTML = '';
+  layer.replaceChildren();
   if (!live.carets.size || !state.current || editor.offsetParent === null || editor.offsetWidth === 0) return;
   Object.assign(layer.style, {
     left: `${editor.offsetLeft}px`,
@@ -2252,6 +2260,7 @@ async function loadOlderTalk() {
 }
 
 function autosizeTalk() {
+  if (CSS.supports('field-sizing', 'content')) return; // le navigateur ajuste déjà la hauteur (CSS)
   const ta = $('#talk-text');
   ta.style.height = 'auto';
   ta.style.height = `${Math.min(140, ta.scrollHeight + 2)}px`;
@@ -2399,39 +2408,36 @@ function editorCommand(cmd) {
   }
 }
 
-/** Remplace une plage sans déplacer le curseur de la personne qui écrit (il suit le texte). */
-function replaceKeepingCaret(at, length, text) {
-  const shift = (p) => (p >= at + length ? p + text.length - length : p > at ? at + text.length : p);
-  replaceRange(at, at + length, text, shift(editor.selectionStart), shift(editor.selectionEnd));
-}
-
-/** Envoie des images au serveur et les insère dans le texte, chacune sur sa ligne, à l'endroit du curseur. */
+/** Envoie des images au serveur puis les insère dans le texte, chacune sur sa ligne, à l'endroit du curseur. */
 async function insertImages(files) {
   const imgs = [...files].filter((f) => f.type.startsWith('image/'));
-  if (!imgs.length || !state.current) return;
+  const docId = state.current?.id;
+  if (!imgs.length || !docId) return;
   if (editor.readOnly) return toast('Ce document ne peut pas être modifié ici.');
   for (const f of imgs) {
     const label = (f.name || '').replace(/\.[^.]+$/, '').replace(/[[\]()\n]+/g, ' ').trim();
     const alt = !label || /^image$/i.test(label) ? 'image' : label;
-    // Repère provisoire (visible des autres aussi) remplacé par l'image une fois envoyée.
-    const token = `![⏳ envoi de l'image « ${alt} »… ${Math.random().toString(36).slice(2, 7)}]()`;
-    const v = editor.value;
-    const pos = editor.selectionEnd;
-    const before = pos > 0 && v[pos - 1] !== '\n' ? '\n\n' : pos > 1 && v[pos - 2] !== '\n' ? '\n' : '';
-    const after = pos >= v.length ? '\n' : v[pos] !== '\n' ? '\n\n' : v[pos + 1] === '\n' ? '' : '\n';
-    replaceRange(pos, pos, before + token + after, pos + before.length + token.length + after.length);
-    let markdown = '';
+    toast(`Envoi de l'image « ${alt} »…`);
+    let url;
     try {
       const fd = new FormData();
       fd.append('file', f, f.name || 'image.png');
       const res = await fetch('/api/images', { method: 'POST', body: fd });
       if (!res.ok) throw await httpError('/api/images', res);
-      markdown = `![${alt}](${(await res.json()).url})`;
+      url = (await res.json()).url;
     } catch (e) {
       toast(`Image « ${alt} » : ${e.message}`, { error: true });
+      continue;
     }
-    const at = editor.value.indexOf(token);
-    if (at >= 0) replaceKeepingCaret(at, token.length, markdown);
+    // Rien n'est écrit avant la fin de l'envoi : un document quitté entre-temps ne garde aucun repère.
+    if (state.current?.id !== docId || editor.readOnly)
+      return toast(`Image « ${alt} » non insérée : le document a été fermé pendant l'envoi.`, { error: true });
+    const md = `![${alt}](${url})`;
+    const v = editor.value;
+    const pos = editor.selectionEnd;
+    const before = pos > 0 && v[pos - 1] !== '\n' ? '\n\n' : pos > 1 && v[pos - 2] !== '\n' ? '\n' : '';
+    const after = pos >= v.length ? '\n' : v[pos] !== '\n' ? '\n\n' : v[pos + 1] === '\n' ? '' : '\n';
+    replaceRange(pos, pos, before + md + after, pos + before.length + md.length + after.length);
   }
 }
 
@@ -2757,7 +2763,7 @@ async function generate() {
   const out = $('#gen-output');
   out.hidden = false;
   out.classList.remove('finished');
-  $('#gen-result').innerHTML = '';
+  $('#gen-result').replaceChildren();
   $('#gen-done').hidden = true;
   $('#gen-done').className = 'done-card';
   $('#gen-thinking').hidden = true;
@@ -2840,7 +2846,7 @@ const chatKey = () => (state.current ? state.current.id : 'global');
 function renderChat() {
   const log = $('#chat-log');
   const msgs = state.chats[chatKey()] || [];
-  log.innerHTML = '';
+  log.replaceChildren();
   if (!msgs.length) {
     log.innerHTML = `<div class="chat-empty">${
       state.current
@@ -3127,7 +3133,7 @@ async function runTool(action, instructions = '') {
   const out = $('#tool-output');
   out.hidden = false;
   out.classList.remove('finished');
-  $('#tool-result').innerHTML = '';
+  $('#tool-result').replaceChildren();
   $('#tool-actions').hidden = true;
   $('#tool-stop').hidden = false;
   $('#tool-status').textContent = `${label} — ${whole ? 'document entier' : `sélection (${info.text.length} car.)`}…`;
@@ -3949,7 +3955,9 @@ async function ensureLogin() {
 /** Affiche l'écran de connexion ; la promesse est tenue une fois connecté avec un mot de passe définitif. */
 function requireLogin() {
   if (login.pending) return login.pending;
-  login.pending = new Promise((resolve) => (login.resolve = resolve));
+  const { promise, resolve } = Promise.withResolvers();
+  login.pending = promise;
+  login.resolve = resolve;
   for (const d of $$('dialog[open]')) d.close();
   showLoginStep('auth');
   $('#login-screen').hidden = false;
@@ -4229,7 +4237,7 @@ function bindEvents() {
   $('#acc-new-user').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
-      createUser();
+      if (!composing(e)) createUser();
     }
   });
   $('#dlg-account').addEventListener('click', (e) => {
@@ -4254,7 +4262,7 @@ function bindEvents() {
   $('#subj-name').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
-      saveSubjectDialog();
+      if (!composing(e)) saveSubjectDialog();
     }
   });
   $('#subj-colors').addEventListener('click', (e) => {
@@ -4310,7 +4318,7 @@ function bindEvents() {
   $('#doc-title').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
-      editor.focus();
+      if (!composing(e)) editor.focus();
     }
   });
   $('#doc-subject').addEventListener('change', changeSubject);
@@ -4404,7 +4412,8 @@ function bindEvents() {
   };
   editor.addEventListener('paste', (e) => {
     const files = [...(e.clipboardData?.files || [])].filter((f) => f.type.startsWith('image/'));
-    if (!files.length) return;
+    // Excel, PowerPoint… copient le texte ET une image de la sélection : le texte l'emporte.
+    if (!files.length || e.clipboardData.getData('text/plain')) return;
     e.preventDefault();
     insertImages(files);
   });
@@ -4435,9 +4444,9 @@ function bindEvents() {
     sendTalk();
   });
   $('#talk-text').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+    if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      sendTalk();
+      if (!composing(e)) sendTalk();
     }
   });
   $('#talk-text').addEventListener('input', () => {
@@ -4492,13 +4501,13 @@ function bindEvents() {
   $('#find-input').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
-      gotoMatch(e.shiftKey ? -1 : 1);
+      if (!composing(e)) gotoMatch(e.shiftKey ? -1 : 1);
     }
   });
   $('#replace-input').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
-      replaceOne();
+      if (!composing(e)) replaceOne();
     }
   });
   $('#find-case').onchange = computeMatches;
@@ -4552,7 +4561,7 @@ function bindEvents() {
   $('#chat-input').addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      $('#chat-form').requestSubmit();
+      if (!composing(e)) $('#chat-form').requestSubmit();
     }
   });
   $('#chat-suggestions').addEventListener('click', (e) => {
@@ -4610,7 +4619,7 @@ function bindEvents() {
   $('#tool-custom').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
-      customTool();
+      if (!composing(e)) customTool();
     }
   });
   $('#tool-replace').onclick = () => applyTool('replace');
